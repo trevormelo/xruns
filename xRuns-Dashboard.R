@@ -2009,6 +2009,31 @@ custom_css <- HTML("
     .tab-body { padding: 0 10px 20px 10px; }
     table.dataTable { font-size: 12px; }
   }
+
+  /* ---- Data source footer ---- */
+  .xruns-data-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 18px 20px 24px 20px;
+    margin-top: 12px;
+    border-top: 1px solid #e2e8f0;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+  .xruns-data-footer a {
+    color: #64748b;
+    text-decoration: none;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .xruns-data-footer a:hover { color: #1a365d; text-decoration: underline; }
+  .xruns-data-footer img { height: 16px; width: 16px; vertical-align: middle; }
 ")
 
 # ---- UI ----------------------------------------------------------------------
@@ -2035,6 +2060,22 @@ ui <- page_navbar(
   theme        = app_theme,
   fillable     = FALSE,
   navbar_options = navbar_options(collapsible = TRUE),
+
+  footer = tags$div(
+    class = "xruns-data-footer",
+    "Data sourced from",
+    tags$a(
+      href   = "https://baseballsavant.mlb.com/",
+      target = "_blank",
+      rel    = "noopener noreferrer",
+      tags$img(
+        src   = "https://baseballsavant.mlb.com/favicon.ico",
+        alt   = "Baseball Savant",
+        style = "height:16px; width:16px; vertical-align:middle; margin-right:4px;"
+      ),
+      "Baseball Savant"
+    )
+  ),
 
   header = tagList(
     tags$head(
@@ -2736,8 +2777,34 @@ server <- function(input, output, session) {
         )
     }
 
+    # Quadrant label positions: near the corners of the plot
+    quad_lbl_x_pos <- x_rng[2] - diff(x_rng) * 0.03
+    quad_lbl_x_neg <- x_rng[1] + diff(x_rng) * 0.03
+    quad_lbl_y_pos <- y_rng[2] - diff(y_rng) * 0.04
+    quad_lbl_y_neg <- y_rng[1] + diff(y_rng) * 0.04
+
+    quadrant_annotations <- list(
+      list(x = quad_lbl_x_pos, y = quad_lbl_y_pos, xref = "x", yref = "y",
+           text = "Good Offense\nGood Defense", showarrow = FALSE,
+           font = list(size = 10.5, color = "#047857", family = "Inter"),
+           align = "right", xanchor = "right", yanchor = "top"),
+      list(x = quad_lbl_x_neg, y = quad_lbl_y_pos, xref = "x", yref = "y",
+           text = "Bad Offense\nGood Defense", showarrow = FALSE,
+           font = list(size = 10.5, color = "#64748b", family = "Inter"),
+           align = "left", xanchor = "left", yanchor = "top"),
+      list(x = quad_lbl_x_pos, y = quad_lbl_y_neg, xref = "x", yref = "y",
+           text = "Good Offense\nBad Defense", showarrow = FALSE,
+           font = list(size = 10.5, color = "#64748b", family = "Inter"),
+           align = "right", xanchor = "right", yanchor = "bottom"),
+      list(x = quad_lbl_x_neg, y = quad_lbl_y_neg, xref = "x", yref = "y",
+           text = "Bad Offense\nBad Defense", showarrow = FALSE,
+           font = list(size = 10.5, color = "#b91c1c", family = "Inter"),
+           align = "left", xanchor = "left", yanchor = "bottom")
+    )
+
     p %>% layout(
-      images    = logo_images,
+      images      = logo_images,
+      annotations = quadrant_annotations,
       xaxis     = list(title      = list(text = "Offensive Rating — hitting + baserunning (runs/game)",
                                          font = list(size = 12.5, color = "#475569")),
                        range      = x_rng,
@@ -2973,8 +3040,33 @@ server <- function(input, output, session) {
       )
     }
 
+    # Annotations: Q2 (upper-left) = Overperforming, Q4 (lower-right) = Underperforming
+    # Q2: high actual run diff, low model rating → team beat expectations
+    # Q4: low actual run diff, high model rating → team fell short of expectations
+    sc_annotations <- list(
+      list(
+        x = rng[1] + diff(rng) * 0.05,
+        y = rng[2] - diff(rng) * 0.05,
+        xref = "x", yref = "y",
+        text = "↑ Overperforming Model",
+        showarrow = FALSE,
+        font = list(size = 11, color = "#047857", family = "Inter"),
+        align = "left", xanchor = "left", yanchor = "top"
+      ),
+      list(
+        x = rng[2] - diff(rng) * 0.05,
+        y = rng[1] + diff(rng) * 0.05,
+        xref = "x", yref = "y",
+        text = "↓ Underperforming Model",
+        showarrow = FALSE,
+        font = list(size = 11, color = "#b91c1c", family = "Inter"),
+        align = "right", xanchor = "right", yanchor = "bottom"
+      )
+    )
+
     p %>% layout(
-      images    = logo_images,
+      images      = logo_images,
+      annotations = sc_annotations,
       xaxis     = list(title     = list(text = "Model Overall Rating (runs/game)",
                                         font = list(size = 12.5, color = "#475569")),
                        range     = rng, zeroline  = FALSE,
