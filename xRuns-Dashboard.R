@@ -49,6 +49,32 @@ OUTS_PER_GAME   <- 27       # defensive outs per game at one fielding position
 FIELDER_OUTS_PER_GAME <- 9 * OUTS_PER_GAME  # 243 fielder-outs per team-game (9 positions)
 SUPPORTED_YEARS <- 2022:2026
 
+# ---- reliability scalars for raw Statcast run values -------------------------
+# Hitting and pitching run values are produced via a regression model that
+# naturally dampens outliers toward expected outcomes. Baserunning and fielding
+# run values are raw Statcast totals with no equivalent shrinkage, which causes
+# single-season extremes to be over-weighted relative to their true signal.
+#
+# To place all four components on the same epistemological footing, we apply
+# reliability-based scalars derived from published sabermetric research:
+#
+#   FIELDING_RELIABILITY = 0.50
+#     UZR year-over-year correlation is ~0.50 at the player level, making
+#     fielding the noisiest WAR component. Source: Lichtman (2010),
+#     "The FanGraphs UZR Primer" (https://blogs.fangraphs.com/the-fangraphs-uzr-primer/)
+#     and "How Reliable is UZR?" via The Hardball Times
+#     (https://tht.fangraphs.com/tht-live/how-reliable-is-uzr/).
+#     FanGraphs explicitly recommends 3-year samples for stable fielding estimates.
+#
+#   BASERUNNING_RELIABILITY = 0.70
+#     BsR/UBR require more than one year of data to become reliably predictive,
+#     but speed and baserunning instincts are more persistent skills than
+#     fielding range, warranting lighter dampening. Source: FanGraphs Sabermetrics
+#     Library — BsR (https://library.fangraphs.com/offense/bsr/) and
+#     UBR (https://library.fangraphs.com/offense/ubr/).
+FIELDING_RELIABILITY    <- 0.50
+BASERUNNING_RELIABILITY <- 0.70
+
 # ---- TEAM_META ---------------------------------------------------------------
 # MLB team_id -> abbreviation / full name mapping (MLB Stats API IDs).
 # mlb_abbrev maps our abbreviations to mlbplotR's conventions (KCR, WSN, etc.)
@@ -882,7 +908,7 @@ build_team_ratings <- function(enriched) {
     ) %>%
     mutate(
       off_hitting = off_hit_rate * PA_PER_GAME,
-      off_br      = off_br_rate  * PA_PER_GAME,
+      off_br      = off_br_rate  * PA_PER_GAME * BASERUNNING_RELIABILITY,
       off_rating  = off_hitting + off_br
     )
   
@@ -927,7 +953,7 @@ build_team_ratings <- function(enriched) {
       team_fld_outs = bat_fld_outs + pit_fld_outs,
       def_fld = ifelse(team_fld_outs > 0,
                        (team_fld_runs / team_fld_outs) * FIELDER_OUTS_PER_GAME,
-                       0)
+                       0) * FIELDING_RELIABILITY
     ) %>%
     select(team_id, team_fld_runs, team_fld_outs, def_fld)
   
@@ -1009,7 +1035,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       br_runs   = dplyr::coalesce(br_runs, 0),
       # Use full-season PA when available; fall back to window PA otherwise.
       pa_denom  = if (has_pa_full) dplyr::coalesce(pa_full, pa) else pa,
-      off_br    = ifelse(pa_denom > 0, (br_runs / pa_denom) * PA_PER_GAME, 0)
+      off_br    = ifelse(pa_denom > 0, (br_runs / pa_denom) * PA_PER_GAME, 0) * BASERUNNING_RELIABILITY
     )
   
   bat_team <- tb_clean %>%
@@ -1065,7 +1091,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       def_fld = dplyr::case_when(
         fld_plays > 0 ~ (fld_runs / fld_plays) * FIELDER_OUTS_PER_GAME,
         TRUE          ~ (fld_runs / SEASON_FIELDER_OUTS) * FIELDER_OUTS_PER_GAME
-      )
+      ) * FIELDING_RELIABILITY
     ) %>%
     dplyr::select(abbrev, team_fld_runs = fld_runs, def_fld)
   
@@ -1257,11 +1283,11 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       PA          = pa,
       xwOBA       = round(est_woba, 3),
       Hitting     = adj_pred_runs_per_pa * PA_PER_GAME,
-      Baserunning = br_per_pa * PA_PER_GAME,
+      Baserunning = br_per_pa * PA_PER_GAME * BASERUNNING_RELIABILITY,
       Pitching    = NA_real_,
-      Fielding    = fld_per_out * OUTS_PER_GAME
+      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY
     )
-  
+
   pit_rows <- pitchers %>%
     transmute(
       player_id,
@@ -1273,7 +1299,7 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Hitting     = NA_real_,
       Baserunning = NA_real_,
       Pitching    = adj_pred_runs_per_pa * PA_PER_GAME,
-      Fielding    = fld_per_out * OUTS_PER_GAME
+      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY
     )
   
   dplyr::bind_rows(bat_rows, pit_rows) %>%
@@ -2112,10 +2138,10 @@ product_css <- HTML("
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 12px 34px rgba(21, 25, 34, 0.16);
     min-height: 64px;
-    padding: 0 max(18px, calc((100vw - 1240px) / 2)) !important;
+    padding: 0 18px !important;
     position: relative;
   }
-  /* Center all navbar content vertically within the 64px bar */
+  /* Stretch navbar content full width so tabs anchor to the right edge */
   .navbar > .container,
   .navbar > .container-fluid,
   .navbar > .container-sm,
@@ -2125,6 +2151,8 @@ product_css <- HTML("
     display: flex !important;
     align-items: center !important;
     min-height: 64px;
+    width: 100% !important;
+    max-width: 100% !important;
   }
   .navbar-brand {
     color: #ffffff !important;
@@ -2197,26 +2225,44 @@ product_css <- HTML("
     box-shadow: none !important;
     outline: 0 !important;
   }
-  @media (min-width: 761px) {
-    .navbar-expand-sm .navbar-toggler,
+  @media (min-width: 992px) {
     .navbar-toggler,
     .navbar-toggle {
       display: none !important;
     }
-    .navbar-expand-sm .navbar-collapse,
+    /* Make container-fluid a flex row: brand left, collapse right */
+    .navbar .container-fluid {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      flex-wrap: nowrap !important;
+      width: 100% !important;
+    }
+    .navbar-header {
+      flex: 0 0 auto;
+    }
     .navbar-collapse {
       display: flex !important;
-      flex-basis: auto !important;
       visibility: visible !important;
       height: auto !important;
       overflow: visible !important;
+      position: static !important;
+      transform: none !important;
+      top: auto !important;
+      right: auto !important;
+      flex: 1 1 auto !important;
       justify-content: flex-end !important;
-      margin-left: auto !important;
+      align-items: center !important;
     }
     .navbar-nav {
+      float: none !important;
+      display: flex !important;
       flex-direction: row !important;
+      flex-wrap: nowrap !important;
+      align-items: center !important;
+      flex: 0 0 auto !important;
       gap: 2px;
-      margin-left: auto !important;
+      margin: 0 !important;
     }
     .nav-link {
       padding-left: 0.55rem !important;
@@ -2224,7 +2270,7 @@ product_css <- HTML("
       font-size: clamp(0.72rem, 1.45vw, 0.86rem);
     }
   }
-  @media (max-width: 760px) {
+  @media (max-width: 991px) {
     .navbar .navbar-toggler,
     .navbar .navbar-toggle,
     .navbar-toggler,
@@ -2234,6 +2280,10 @@ product_css <- HTML("
       height: 52px !important;
       min-width: 52px !important;
       cursor: pointer !important;
+    }
+    .navbar-collapse {
+      position: static !important;
+      transform: none !important;
     }
     .navbar-brand .brand-sub {
       display: inline !important;
@@ -2834,10 +2884,10 @@ ui <- page_navbar(
           var style = document.createElement('style');
           style.textContent = [
             '.navbar .navbar-toggler,.navbar .navbar-toggle{display:none!important;background:transparent!important;background-color:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;outline:0!important;}',
-            '@media (max-width:760px){.navbar .navbar-toggler,.navbar .navbar-toggle{display:flex!important;width:52px!important;height:52px!important;min-width:52px!important;cursor:pointer!important;}}',
-            '@media (max-width:760px){.navbar-collapse{position:absolute;top:64px;left:0;right:0;background:rgba(21,25,34,0.97);padding:8px 16px 14px;z-index:9999;border-top:1px solid rgba(255,255,255,0.08);}}',
-            '@media (max-width:760px){.navbar-nav{flex-direction:column!important;gap:2px;}}',
-            '@media (max-width:760px){.navbar-collapse:not(.show){display:none!important;}}',
+            '@media (max-width:991px){.navbar .navbar-toggler,.navbar .navbar-toggle{display:flex!important;width:52px!important;height:52px!important;min-width:52px!important;cursor:pointer!important;}}',
+            '@media (max-width:991px){.navbar-collapse{position:absolute;top:64px;left:0;right:0;background:rgba(21,25,34,0.97);padding:8px 16px 14px;z-index:9999;border-top:1px solid rgba(255,255,255,0.08);}}',
+            '@media (max-width:991px){.navbar-nav{flex-direction:column!important;gap:2px;}}',
+            '@media (max-width:991px){.navbar-collapse:not(.show){display:none!important;}}',
             '.navbar .navbar-toggler-icon,.navbar .navbar-toggle .icon-bar{display:none!important;}',
             '.navbar .navbar-toggler:before,.navbar .navbar-toggle:before{content:\"\";display:block;width:27px;height:2px;background:#fff;border-radius:2px;box-shadow:0 8px 0 #fff,0 16px 0 #fff;}'
           ].join('\\n');
@@ -3139,12 +3189,51 @@ ui <- page_navbar(
                           tags$p(tags$b("Baserunning and fielding"),
                                  " are layered on top of the regression as independent",
                                  " Statcast run-value components (runner_runs and fielding total_runs,",
-                                 " both already in 'runs above average' units). For the current season,",
+                                 " both already in \u2018runs above average\u2019 units). For the current season,",
                                  " actual year-to-date team run values are used directly.",
                                  " Offense = hitting + baserunning;",
                                  " Defense = pitching + fielding. Team baserunning is normalized to runs per",
                                  " team-PA \u00d7 38 PA/game; team fielding is normalized to runs per defensive",
                                  " fielder-out \u00d7 243 fielder-outs/game."),
+                          tags$p(tags$b("Reliability dampening:"),
+                                 " hitting and pitching run values emerge from the regression model, which",
+                                 " naturally shrinks single-season outliers toward expected outcomes.",
+                                 " Raw Statcast baserunning and fielding totals have no equivalent shrinkage,",
+                                 " so extreme values are over-weighted relative to their true signal.",
+                                 " To place all four components on the same epistemological footing,",
+                                 " each raw component is multiplied by a reliability scalar derived from",
+                                 " published sabermetric research on year-over-year repeatability:"),
+                          tags$ul(
+                            style = "margin: 4px 0 10px 18px; font-size:13.5px; line-height:1.7;",
+                            tags$li(
+                              tags$b("Fielding \u00d7 0.50 \u2014 "),
+                              "UZR year-over-year correlation is approximately 0.50 at the player level,",
+                              " making fielding the noisiest WAR component by a wide margin. FanGraphs",
+                              " explicitly recommends three-year samples before treating fielding values as",
+                              " stable. Sources: Lichtman (2010), ",
+                              tags$a(href = "https://blogs.fangraphs.com/the-fangraphs-uzr-primer/",
+                                     target = "_blank", "\u201cThe FanGraphs UZR Primer\u201d"),
+                              "; ",
+                              tags$a(href = "https://tht.fangraphs.com/tht-live/how-reliable-is-uzr/",
+                                     target = "_blank", "\u201cHow Reliable is UZR?\u201d"),
+                              " via The Hardball Times; ",
+                              tags$a(href = "https://library.fangraphs.com/defense/uzr/",
+                                     target = "_blank", "FanGraphs UZR library page"),
+                              "."
+                            ),
+                            tags$li(
+                              tags$b("Baserunning \u00d7 0.70 \u2014 "),
+                              "BsR and UBR require more than one year of data to become reliably",
+                              " predictive, but speed and baserunning instincts are more persistent",
+                              " skills than fielding range, warranting lighter dampening. Sources: ",
+                              tags$a(href = "https://library.fangraphs.com/offense/bsr/",
+                                     target = "_blank", "FanGraphs BsR library page"),
+                              "; ",
+                              tags$a(href = "https://library.fangraphs.com/offense/ubr/",
+                                     target = "_blank", "FanGraphs UBR library page"),
+                              "."
+                            )
+                          ),
                           tags$p(tags$b("Important:"), " the model is NOT trained on W-L records or team run totals. ",
                                  "The accuracy check below validates it against actual run differential per game.")
                  )
