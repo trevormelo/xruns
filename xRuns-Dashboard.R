@@ -111,18 +111,54 @@ TEAM_META$team_logo_espn <- paste0(
   ".png"
 )
 
-# Try to pull team primary colors from mlbplotR; fall back to navy if unavailable.
+# Hardcoded primary colors for all 30 MLB teams (used as definitive source).
+# These are the official/canonical primary colors for each franchise. mlbplotR
+# is checked first and its value wins only when present and valid; these hex
+# codes serve as the complete, reliable fallback so every team always has a color.
+TEAM_COLOR_FALLBACKS <- c(
+  LAA = "#BA0021", ARI = "#A71930", BAL = "#DF4601", BOS = "#BD3039",
+  CHC = "#0E3386", CIN = "#C6011F", CLE = "#0C2340", COL = "#33006F",
+  DET = "#0C2340", HOU = "#002D62", KC  = "#004687", LAD = "#005A9C",
+  WSH = "#AB0003", NYM = "#002D72", OAK = "#003831", PIT = "#FDB827",
+  SD  = "#2F241D", SEA = "#0C2C56", SF  = "#FD5A1E", STL = "#C41E3A",
+  TB  = "#092C5C", TEX = "#003278", TOR = "#134A8E", MIN = "#002B5C",
+  PHI = "#E81828", ATL = "#CE1141", CWS = "#27251F", MIA = "#00A3E0",
+  NYY = "#0C2340", MIL = "#12284B"
+)
+
+# Try to pull team primary colors from mlbplotR; fall back to hardcoded hex if
+# unavailable or if the team is missing from the mlbplotR data. mlbplotR may
+# not include every franchise (e.g. relocated teams, expansion) or may use
+# different column names across package versions — we handle all cases here.
 mlb_colors <- tryCatch({
-  mlbplotR::load_mlb_teams() |>
-    dplyr::select(team_abbr, team_color)
+  teams_raw <- mlbplotR::load_mlb_teams()
+  # mlbplotR column may be team_color or team_color1 depending on version
+  color_col <- intersect(c("team_color", "team_color1", "primary_color"), names(teams_raw))[1]
+  if (is.na(color_col)) stop("no color column found")
+  # Use base R rename to avoid tidy-eval issues inside tryCatch
+  out <- teams_raw[, c("team_abbr", color_col)]
+  names(out)[2] <- "team_color"
+  out
 }, error = function(e) NULL)
 
 if (!is.null(mlb_colors)) {
   TEAM_META <- TEAM_META %>%
     dplyr::left_join(mlb_colors, by = c("mlb_abbrev" = "team_abbr"))
 } else {
-  TEAM_META$team_color <- "#1a365d"
+  TEAM_META$team_color <- NA_character_
 }
+
+# Coalesce: mlbplotR value → hardcoded fallback → dark navy default
+TEAM_META$team_color <- dplyr::coalesce(
+  # Only use mlbplotR color if it looks like a valid hex code
+  dplyr::if_else(
+    grepl("^#[0-9A-Fa-f]{6}$", as.character(TEAM_META$team_color)),
+    as.character(TEAM_META$team_color),
+    NA_character_
+  ),
+  unname(TEAM_COLOR_FALLBACKS[TEAM_META$abbrev]),
+  "#151922"
+)
 
 # Map of names that may appear in the standings CSVs to a canonical team_id.
 STANDING_NAME_ALIASES <- c(
@@ -147,6 +183,17 @@ GITHUB_API_BASE <- "https://api.github.com/repos/trevormelo/xruns/contents"
 
 # Helper: fetch a CSV from a GitHub raw URL; returns NULL silently on 404/error.
 read_github_csv <- function(url) {
+  prefix <- paste0(GITHUB_RAW_BASE, "/")
+  if (startsWith(url, prefix)) {
+    local_path <- utils::URLdecode(sub(prefix, "", url, fixed = TRUE))
+    if (file.exists(local_path)) {
+      return(tryCatch(
+        readr::read_csv(local_path, show_col_types = FALSE),
+        error   = function(e) NULL,
+        warning = function(w) NULL
+      ))
+    }
+  }
   tryCatch(
     readr::read_csv(url, show_col_types = FALSE),
     error   = function(e) NULL,
@@ -158,6 +205,9 @@ read_github_csv <- function(url) {
 # vector of filenames (not full URLs), or character(0) on failure.
 # 404s (e.g. years without a Snapshots/ folder) are silently ignored.
 github_list_files <- function(path_in_repo) {
+  if (dir.exists(path_in_repo)) {
+    return(basename(list.files(path_in_repo, all.files = FALSE, no.. = TRUE)))
+  }
   api_url <- paste0(GITHUB_API_BASE, "/", utils::URLencode(path_in_repo, repeated = TRUE))
   response <- tryCatch(
     suppressWarnings(jsonlite::fromJSON(api_url)),
@@ -260,7 +310,7 @@ load_year <- function(base, y) {
   if (is.null(info)) return(NULL)
   f          <- info$folder
   short_names <- info$short_names
-
+  
   if (short_names) {
     eb <- read_github_csv(github_raw_url(f, sprintf("bat_%d.csv",    y)))
     ep <- read_github_csv(github_raw_url(f, sprintf("pit_%d.csv",    y)))
@@ -273,7 +323,7 @@ load_year <- function(base, y) {
     rp <- read_github_csv(github_raw_url(f, sprintf("run_value_pitcher_%d.csv",      y)))
   }
   if (any(sapply(list(eb, ep, rb, rp), is.null))) return(NULL)
-
+  
   # ---- Baserunning (may be missing for older years) ---------------------------
   run_df_raw <- try_read_csv_urls(
     github_raw_url(f, sprintf("br_%d.csv",      y)),
@@ -297,7 +347,7 @@ load_year <- function(base, y) {
   } else {
     tibble(player_id = integer(0), br_runs = numeric(0), br_opps = numeric(0))
   }
-
+  
   # ---- Fielding (may be missing for older years) ------------------------------
   fld_df_raw <- try_read_csv_urls(
     github_raw_url(f, sprintf("fld_%d.csv",      y)),
@@ -321,7 +371,7 @@ load_year <- function(base, y) {
   } else {
     tibble(player_id = integer(0), fld_runs = numeric(0), fld_outs = numeric(0))
   }
-
+  
   # Search for standings — try the player folder and the primary year folder.
   year_data_folder <- paste0(y, " Data")
   st <- NULL
@@ -347,7 +397,7 @@ load_year <- function(base, y) {
         year           = y
       )
   }
-
+  
   name_col <- "last_name, first_name"
   eb$player <- split_name(eb[[name_col]])
   ep$player <- split_name(ep[[name_col]])
@@ -355,10 +405,10 @@ load_year <- function(base, y) {
   rp$player <- split_name(rp[[name_col]])
   ep$era  <- safe_numeric(ep$era)
   ep$xera <- safe_numeric(ep$xera)
-
+  
   eb$season_year <- y; ep$season_year <- y
   rb$season_year <- y; rp$season_year <- y
-
+  
   batters <- eb %>%
     select(player, player_id, season_year,
            pa_exp = pa, bip, ba, est_ba, slg, est_slg, woba, est_woba) %>%
@@ -374,7 +424,7 @@ load_year <- function(base, y) {
            br_runs     = dplyr::coalesce(br_runs, 0),
            br_opps     = dplyr::coalesce(br_opps, 0),
            br_per_pa   = ifelse(pa_rv > 0, br_runs / pa_rv, 0))
-
+  
   pitchers <- ep %>%
     select(player, player_id, season_year,
            pa_exp = pa, bip, ba, est_ba, slg, est_slg, woba, est_woba, era, xera) %>%
@@ -386,7 +436,7 @@ load_year <- function(base, y) {
     mutate(pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1))
-
+  
   # Attach fielding to whichever role that player appears in.
   # Rule: if the player appears in BOTH batters and pitchers (two-way, e.g. Ohtani),
   # attribute their fielding totals to whichever role has more PA — so team-level
@@ -395,34 +445,34 @@ load_year <- function(base, y) {
     bat_ids <- batters$player_id
     pit_ids <- pitchers$player_id
     dual_ids <- intersect(bat_ids, pit_ids)
-
+    
     bat_pa_lookup <- setNames(batters$pa_rv,  as.character(batters$player_id))
     pit_pa_lookup <- setNames(pitchers$pa_rv, as.character(pitchers$player_id))
-
+    
     # For dual-role players decide the primary role once.
     primary_role_for_dual <- vapply(as.character(dual_ids), function(id) {
       b_pa <- suppressWarnings(as.numeric(bat_pa_lookup[[id]])); if (is.na(b_pa)) b_pa <- 0
       p_pa <- suppressWarnings(as.numeric(pit_pa_lookup[[id]])); if (is.na(p_pa)) p_pa <- 0
       if (b_pa >= p_pa) "batter" else "pitcher"
     }, character(1))
-
+    
     fld_bat_ids <- fld_df$player_id[fld_df$player_id %in% bat_ids]
     fld_pit_ids <- fld_df$player_id[fld_df$player_id %in% pit_ids]
-
+    
     # Remove from the non-primary role for duals.
     dual_as_pitcher <- dual_ids[primary_role_for_dual == "pitcher"]
     dual_as_batter  <- dual_ids[primary_role_for_dual == "batter"]
-
+    
     bat_fld <- fld_df %>% filter(player_id %in% setdiff(fld_bat_ids, dual_as_pitcher))
     pit_fld <- fld_df %>% filter(player_id %in% setdiff(fld_pit_ids, dual_as_batter))
-
+    
     batters  <- batters  %>% left_join(bat_fld, by = "player_id")
     pitchers <- pitchers %>% left_join(pit_fld, by = "player_id")
   } else {
     batters  <- batters  %>% mutate(fld_runs = NA_real_, fld_outs = NA_real_)
     pitchers <- pitchers %>% mutate(fld_runs = NA_real_, fld_outs = NA_real_)
   }
-
+  
   batters <- batters %>%
     mutate(
       fld_runs    = dplyr::coalesce(fld_runs, 0),
@@ -435,7 +485,7 @@ load_year <- function(base, y) {
       fld_outs    = dplyr::coalesce(fld_outs, 0),
       fld_per_out = ifelse(fld_outs > 0, fld_runs / fld_outs, 0)
     )
-
+  
   list(year = y, batters = batters, pitchers = pitchers, standings = st,
        run_df = run_df, fld_df = fld_df)
 }
@@ -465,18 +515,18 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
   tp   <- read_github_csv(pit_p); if (is.null(tp))   return(NULL)
   tbr  <- read_github_csv(br_p);  if (is.null(tbr))  return(NULL)
   tfld <- read_github_csv(fld_p); if (is.null(tfld)) return(NULL)
-
+  
   # Normalise team abbreviation column
   get_abbrev <- function(df) {
     col <- if ("team_id" %in% names(df)) "team_id"
-           else if ("abbrev" %in% names(df)) "abbrev"
-           else NA
+    else if ("abbrev" %in% names(df)) "abbrev"
+    else NA
     if (is.na(col)) return(rep(NA_character_, nrow(df)))
     canonicalize_abbrev(as.character(df[[col]]))
   }
   tb$abbrev <- get_abbrev(tb)
   tp$abbrev <- get_abbrev(tp)
-
+  
   tbr$abbrev <- if ("player_id" %in% names(tbr)) {
     TEAM_META$abbrev[match(as.integer(tbr$player_id), TEAM_META$team_id)]
   } else if ("entity_name" %in% names(tbr)) {
@@ -484,13 +534,13 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
   } else {
     rep(NA_character_, nrow(tbr))
   }
-
+  
   if ("id" %in% names(tfld)) {
     tfld$abbrev <- TEAM_META$abbrev[match(as.integer(tfld$id), TEAM_META$team_id)]
   } else if ("name" %in% names(tfld)) {
     tfld$abbrev <- TEAM_META$abbrev[match(tfld$name, TEAM_META$team_name)]
   }
-
+  
   team_batting <- tb %>%
     dplyr::transmute(
       abbrev,
@@ -502,7 +552,7 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
     ) %>%
     dplyr::filter(!is.na(abbrev), !is.na(pa)) %>%
     dplyr::mutate(bip_rate = bip / pmax(pa, 1))
-
+  
   team_pitching <- tp %>%
     dplyr::transmute(
       abbrev,
@@ -514,11 +564,11 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
     ) %>%
     dplyr::filter(!is.na(abbrev), !is.na(pa)) %>%
     dplyr::mutate(bip_rate = bip / pmax(pa, 1))
-
+  
   team_br <- tbr %>%
     dplyr::transmute(abbrev, br_runs = safe_numeric(runner_runs_tot)) %>%
     dplyr::filter(!is.na(abbrev))
-
+  
   team_fld <- tfld %>%
     dplyr::transmute(
       abbrev,
@@ -526,7 +576,7 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
       fld_plays = safe_numeric(if ("tot_plays" %in% names(tfld)) tot_plays else NA)
     ) %>%
     dplyr::filter(!is.na(abbrev))
-
+  
   # Optional standings lookup
   st <- NULL
   if (!is.null(standings_folder)) {
@@ -552,7 +602,7 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
       }
     }
   }
-
+  
   list(
     year          = y,
     team_mode     = TRUE,
@@ -569,26 +619,26 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
 # File listing is done via the GitHub API.
 scan_and_load_snapshots <- function(base, y) {
   snap_folder <- paste0(y, " Data/Snapshots")
-
+  
   all_names <- github_list_files(snap_folder)
   if (length(all_names) == 0) return(list())
-
+  
   pattern   <- sprintf("^bat_t_%d-\\d{2}-\\d{2}\\.csv$", y)
   bat_files <- sort(grep(pattern, all_names, value = TRUE))
   if (length(bat_files) == 0) return(list())
-
+  
   year_data_folder <- paste0(y, " Data")
   result <- list()
   for (bf in bat_files) {
     d_str <- sub(sprintf("^bat_t_(%d-\\d{2}-\\d{2})\\.csv$", y), "\\1", bf)
     d     <- tryCatch(as.Date(d_str), error = function(e) NA_Date_)
     if (is.na(d)) next
-
+    
     bat_p <- github_raw_url(snap_folder, sprintf("bat_t_%s.csv",  d_str))
     pit_p <- github_raw_url(snap_folder, sprintf("pit_t_%s.csv",  d_str))
     br_p  <- github_raw_url(snap_folder, sprintf("br_t_%s.csv",   d_str))
     fld_p <- github_raw_url(snap_folder, sprintf("fld_t_%s.csv",  d_str))
-
+    
     snap <- load_one_snapshot(bat_p, pit_p, br_p, fld_p, y,
                               standings_folder = year_data_folder)
     if (is.null(snap)) next
@@ -602,15 +652,15 @@ scan_and_load_snapshots <- function(base, y) {
 # Wraps the old expected_stats_team_batting_YYYY.csv style into the snapshot list.
 load_year_team_compat <- function(base, y) {
   f <- paste0(y, " Data")
-
+  
   tb_p  <- github_raw_url(f, sprintf("expected_stats_team_batting_%d.csv",  y))
   tp_p  <- github_raw_url(f, sprintf("expected_stats_team_pitching_%d.csv", y))
   br_p  <- github_raw_url(f, sprintf("baserunning_run_value_team_%d.csv",   y))
   fld_p <- github_raw_url(f, sprintf("fielding-run-value_team_%d.csv",      y))
-
+  
   snap <- load_one_snapshot(tb_p, tp_p, br_p, fld_p, y, standings_folder = f)
   if (is.null(snap)) return(list())
-
+  
   # Fall back to Apr 1 of the season year (no file mod-time available via URL)
   d_str <- sprintf("%d-04-01", y)
   snap$date <- as.Date(d_str)
@@ -641,11 +691,11 @@ delta_rate_df <- function(new_df, old_df) {
 # Gracefully falls back to oldest available baseline if history is too short.
 compute_window_data <- function(snapshots, window_days) {
   if (length(snapshots) == 0) return(NULL)
-
+  
   d_strs   <- names(snapshots)           # sorted oldest → newest
   latest_d <- d_strs[length(d_strs)]
   latest   <- snapshots[[latest_d]]
-
+  
   # Full-season or only one snapshot → return latest as-is
   if (is.infinite(window_days) || length(d_strs) == 1) {
     out <- latest
@@ -654,12 +704,12 @@ compute_window_data <- function(snapshots, window_days) {
     out$fallback_msg    <- NULL
     return(out)
   }
-
+  
   latest_date  <- as.Date(latest_d)
   cutoff_date  <- latest_date - window_days
   older_d_strs <- d_strs[as.Date(d_strs) <= cutoff_date]
   fallback_msg <- NULL
-
+  
   if (length(older_d_strs) == 0) {
     # Not enough history — use oldest available as baseline
     older_d      <- d_strs[1]
@@ -670,12 +720,12 @@ compute_window_data <- function(snapshots, window_days) {
   } else {
     older_d <- older_d_strs[length(older_d_strs)]   # newest snapshot before cutoff
   }
-
+  
   older <- snapshots[[older_d]]
-
+  
   bat_d <- delta_rate_df(latest$team_batting,  older$team_batting)
   pit_d <- delta_rate_df(latest$team_pitching, older$team_pitching)
-
+  
   # ---- Baserunning & Fielding: anchor to full-season rate ----------------------
   # BR and fielding run values are discrete and update infrequently — many teams
   # will show zero delta in any short window even after playing games.  Using the
@@ -690,18 +740,18 @@ compute_window_data <- function(snapshots, window_days) {
   # latest snapshot total, so they naturally shift relative to teams that didn't
   # change — without distorting the others.
   full_season_pa <- latest$team_batting %>% dplyr::select(abbrev, pa_full = pa)
-
+  
   br_d <- latest$team_br %>%
     dplyr::left_join(full_season_pa, by = "abbrev") %>%
     dplyr::select(abbrev, br_runs, pa_full)
-
+  
   fld_d <- latest$team_fld %>%
     dplyr::transmute(
       abbrev,
       fld_runs  = dplyr::coalesce(fld_runs, 0),
       fld_plays = dplyr::coalesce(fld_plays, 0)
     )
-
+  
   list(
     year           = latest$year,
     team_mode      = TRUE,
@@ -792,21 +842,21 @@ fit_pooled_models <- function(years_list) {
 enrich_year <- function(year_data, models) {
   batters  <- year_data$batters
   pitchers <- year_data$pitchers
-
+  
   batters$pred_runs_per_pa  <- predict(models$bat_model, batters)
   pitchers$pred_runs_per_pa <- predict(models$pit_model, pitchers)
-
+  
   bat_mean_pa <- weighted.mean(batters$pred_runs_per_pa,  batters$pa_rv,  na.rm = TRUE)
   pit_mean_pa <- weighted.mean(pitchers$pred_runs_per_pa, pitchers$pa_rv, na.rm = TRUE)
-
+  
   batters$adj_pred_runs_per_pa  <- batters$pred_runs_per_pa  - bat_mean_pa
   pitchers$adj_pred_runs_per_pa <- pitchers$pred_runs_per_pa - pit_mean_pa
-
+  
   batters$pred_runs_total       <- batters$pred_runs_per_pa  * batters$pa
   pitchers$pred_runs_total      <- pitchers$pred_runs_per_pa * pitchers$pa
   batters$adj_pred_runs_total   <- batters$adj_pred_runs_per_pa  * batters$pa
   pitchers$adj_pred_runs_total  <- pitchers$adj_pred_runs_per_pa * pitchers$pa
-
+  
   list(year = year_data$year, batters = batters, pitchers = pitchers,
        standings = year_data$standings,
        bat_mean_pa = bat_mean_pa, pit_mean_pa = pit_mean_pa)
@@ -835,7 +885,7 @@ build_team_ratings <- function(enriched) {
       off_br      = off_br_rate  * PA_PER_GAME,
       off_rating  = off_hitting + off_br
     )
-
+  
   # ---- Defense = pitching + fielding -----------------------------------------
   # Pitching per game: PA-weighted mean of pitcher per-PA rate × 38.
   # Fielding per game: team fielding total scaled by FIELDER_OUTS_PER_GAME (243)
@@ -851,7 +901,7 @@ build_team_ratings <- function(enriched) {
       .groups = "drop"
     ) %>%
     mutate(def_pitching = def_pit_rate * PA_PER_GAME)
-
+  
   # Team fielding aggregates from BOTH batters and pitchers (each player contributes
   # once — dual-role players were assigned to exactly one role during load).
   bat_fld_team <- enriched$batters %>%
@@ -866,7 +916,7 @@ build_team_ratings <- function(enriched) {
     summarise(pit_fld_runs = sum(fld_runs, na.rm = TRUE),
               pit_fld_outs = sum(fld_outs, na.rm = TRUE),
               .groups = "drop")
-
+  
   fld_team <- dplyr::full_join(bat_fld_team, pit_fld_team, by = "team_id") %>%
     mutate(
       bat_fld_runs = dplyr::coalesce(bat_fld_runs, 0),
@@ -880,7 +930,7 @@ build_team_ratings <- function(enriched) {
                        0)
     ) %>%
     select(team_id, team_fld_runs, team_fld_outs, def_fld)
-
+  
   teams <- TEAM_META %>%
     left_join(bat_team %>% select(team_id, n_batters, total_bat_pa,
                                   off_hitting, off_br, off_rating),
@@ -905,7 +955,7 @@ build_team_ratings <- function(enriched) {
            n_batters, n_pitchers, total_bat_pa, total_pit_pa,
            team_fld_runs, team_fld_outs,
            team_color, team_logo_espn)
-
+  
   if (!is.null(enriched$standings)) {
     teams <- teams %>% left_join(
       enriched$standings %>% select(team_id, W, L, `W-L%`, R, RA, Rdiff, rdiff_per_game),
@@ -923,15 +973,15 @@ build_team_ratings_team_mode <- function(year_data, models) {
   tp   <- year_data$team_pitching
   tbr  <- year_data$team_br
   tfld <- year_data$team_fld
-
+  
   # ---- Hitting: apply bat_model to team-level batting stats -------------------
   # We need est_woba and bip_rate (same predictors as player model)
   bat_needed <- c("est_woba", "bip_rate")
   tb_clean <- tb %>%
     dplyr::filter(dplyr::if_all(dplyr::all_of(bat_needed), is.finite))
-
+  
   tb_clean$pred_runs_per_pa <- predict(models$bat_model, tb_clean)
-
+  
   # Centre to league mean (PA-weighted)
   bat_mean <- stats::weighted.mean(tb_clean$pred_runs_per_pa, tb_clean$pa, na.rm = TRUE)
   tb_clean <- tb_clean %>%
@@ -939,7 +989,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       adj_pred_runs_per_pa = pred_runs_per_pa - bat_mean,
       off_hitting          = adj_pred_runs_per_pa * PA_PER_GAME
     )
-
+  
   # ---- Baserunning: actual team BR run values (already runs above avg) --------
   # Normalise to runs/PA then scale to per-game.
   # When tbr carries a pa_full column (set by compute_window_data for date-
@@ -961,7 +1011,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       pa_denom  = if (has_pa_full) dplyr::coalesce(pa_full, pa) else pa,
       off_br    = ifelse(pa_denom > 0, (br_runs / pa_denom) * PA_PER_GAME, 0)
     )
-
+  
   bat_team <- tb_clean %>%
     dplyr::left_join(br_aug %>% dplyr::select(abbrev, br_runs, off_br), by = "abbrev") %>%
     dplyr::mutate(
@@ -969,7 +1019,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       off_rating   = off_hitting + off_br
     ) %>%
     dplyr::select(abbrev, total_bat_pa, off_hitting, off_br, off_rating, br_runs)
-
+  
   # ---- Pitching: apply pit_model to team-level pitching stats ----------------
   # The pitcher model uses est_woba + xera.  Team pitching files don't have xERA,
   # so we substitute the bat_model's xwOBA-only prediction pathway:
@@ -978,25 +1028,25 @@ build_team_ratings_team_mode <- function(year_data, models) {
   # Simple approach: set xera = mean(xera) from training data (neutral) so the
   # prediction is driven entirely by xwOBA.  This is conservative and consistent.
   mean_xera <- mean(models$pit_model$model[["xera"]], na.rm = TRUE)
-
+  
   pit_needed <- c("est_woba", "bip_rate")
   tp_clean <- tp %>%
     dplyr::filter(dplyr::if_all(dplyr::all_of(pit_needed), is.finite)) %>%
     dplyr::mutate(xera = mean_xera)  # fill with mean so model can predict
-
+  
   tp_clean$pred_runs_per_pa <- predict(models$pit_model, tp_clean)
-
+  
   pit_mean <- stats::weighted.mean(tp_clean$pred_runs_per_pa, tp_clean$pa, na.rm = TRUE)
   tp_clean <- tp_clean %>%
     dplyr::mutate(
       adj_pred_runs_per_pa = pred_runs_per_pa - pit_mean,
       def_pitching         = adj_pred_runs_per_pa * PA_PER_GAME
     )
-
+  
   pit_team <- tp_clean %>%
     dplyr::mutate(total_pit_pa = pa) %>%
     dplyr::select(abbrev, total_pit_pa, def_pitching)
-
+  
   # ---- Fielding: actual 2026 team fielding run values ------------------------
   # Normalise to runs per fielder-out × FIELDER_OUTS_PER_GAME (243).
   # If fld_plays (total defensive plays) is available use it; otherwise
@@ -1006,7 +1056,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       fld_runs  = dplyr::coalesce(fld_runs, 0),
       fld_plays = dplyr::coalesce(fld_plays, 0)
     )
-
+  
   # Compute def_fld using fld_plays as the outs denominator if > 0,
   # otherwise fall back to the season-average FIELDER_OUTS_PER_GAME×162 total.
   SEASON_FIELDER_OUTS <- FIELDER_OUTS_PER_GAME * 162
@@ -1018,7 +1068,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
       )
     ) %>%
     dplyr::select(abbrev, team_fld_runs = fld_runs, def_fld)
-
+  
   # ---- Assemble final table (join on abbrev → team_id via TEAM_META) ----------
   teams <- TEAM_META %>%
     dplyr::left_join(bat_team, by = "abbrev") %>%
@@ -1049,7 +1099,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
                   n_batters, n_pitchers, total_bat_pa, total_pit_pa,
                   team_fld_runs, team_fld_outs,
                   team_color, team_logo_espn)
-
+  
   if (!is.null(year_data$standings)) {
     teams <- teams %>% dplyr::left_join(
       year_data$standings %>% dplyr::select(team_id, W, L, `W-L%`, R, RA, Rdiff, rdiff_per_game),
@@ -1077,7 +1127,7 @@ build_team_ratings_team_mode <- function(year_data, models) {
 # =============================================================================
 compute_blended_season_ratings <- function(snapshots, models, standings = NULL) {
   if (length(snapshots) == 0) return(NULL)
-
+  
   # ---- Full-season ratings (latest snapshot, window = Inf) -------------------
   full_data <- compute_window_data(snapshots, Inf)
   if (is.null(full_data)) return(NULL)
@@ -1086,7 +1136,7 @@ compute_blended_season_ratings <- function(snapshots, models, standings = NULL) 
     error = function(e) NULL
   )
   if (is.null(full_tbl)) return(NULL)
-
+  
   # ---- 14-day window ratings -------------------------------------------------
   recent_data <- compute_window_data(snapshots, 14)
   if (is.null(recent_data)) {
@@ -1099,7 +1149,7 @@ compute_blended_season_ratings <- function(snapshots, models, standings = NULL) 
     }
     return(full_tbl %>% dplyr::mutate(recency_alpha = 0))
   }
-
+  
   recent_tbl <- tryCatch(
     build_team_ratings_team_mode(recent_data, models),
     error = function(e) NULL
@@ -1113,21 +1163,21 @@ compute_blended_season_ratings <- function(snapshots, models, standings = NULL) 
     }
     return(full_tbl %>% dplyr::mutate(recency_alpha = 0))
   }
-
+  
   # ---- Compute per-team alpha using recent-window PA as the sample signal ----
   # recent_data$team_batting has the PA for the 14-day delta period.
   recent_pa_lookup <- recent_data$team_batting %>%
     dplyr::select(abbrev, pa_recent = pa)
-
+  
   # ---- Blend at the component level so each sub-rating is correct ------------
   blended <- full_tbl %>%
     dplyr::left_join(recent_pa_lookup, by = "abbrev") %>%
     dplyr::mutate(
       pa_recent     = dplyr::coalesce(pa_recent, 0),
       recency_alpha = RECENCY_BLEND_ALPHA_MAX *
-                        (pa_recent / (pa_recent + RECENCY_BLEND_K))
+        (pa_recent / (pa_recent + RECENCY_BLEND_K))
     )
-
+  
   # Pull recent component values into blended for the join.
   recent_components <- recent_tbl %>%
     dplyr::select(abbrev,
@@ -1138,7 +1188,7 @@ compute_blended_season_ratings <- function(snapshots, models, standings = NULL) 
                   r_def_fld      = def_fld,
                   r_def_rating   = def_rating,
                   r_overall      = overall)
-
+  
   blended <- blended %>%
     dplyr::left_join(recent_components, by = "abbrev") %>%
     dplyr::mutate(
@@ -1162,7 +1212,7 @@ compute_blended_season_ratings <- function(snapshots, models, standings = NULL) 
     dplyr::select(-dplyr::starts_with("r_"), -pa_recent) %>%
     dplyr::arrange(dplyr::desc(overall)) %>%
     dplyr::mutate(rank = dplyr::row_number())
-
+  
   if (!is.null(standings)) {
     blended <- blended %>% dplyr::left_join(
       standings %>% dplyr::select(team_id, W, L, `W-L%`, R, RA, Rdiff, rdiff_per_game),
@@ -1181,7 +1231,7 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
   # weighted rates). Falls back gracefully if those columns don't exist.
   batters  <- enriched$batters
   pitchers <- enriched$pitchers
-
+  
   if (use_single_season && "single_season_adj_pred" %in% names(batters)) {
     batters <- batters %>%
       dplyr::mutate(
@@ -1197,7 +1247,7 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
         fld_per_out          = single_season_fld_per_out
       )
   }
-
+  
   bat_rows <- batters %>%
     transmute(
       player_id,
@@ -1211,7 +1261,7 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Pitching    = NA_real_,
       Fielding    = fld_per_out * OUTS_PER_GAME
     )
-
+  
   pit_rows <- pitchers %>%
     transmute(
       player_id,
@@ -1225,7 +1275,7 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Pitching    = adj_pred_runs_per_pa * PA_PER_GAME,
       Fielding    = fld_per_out * OUTS_PER_GAME
     )
-
+  
   dplyr::bind_rows(bat_rows, pit_rows) %>%
     dplyr::mutate(
       Overall = rowSums(
@@ -1375,9 +1425,9 @@ for (yc in names(team_tbl_by_year)) {
     seq_along(sort(as.integer(player_yr_names))),
     player_yr_names
   )
-
+  
   most_recent_player_yr <- as.character(max(as.integer(player_yr_names)))
-
+  
   # ---- batters: hitting rate -------------------------------------------------
   all_bat_rows <- dplyr::bind_rows(lapply(player_yr_names, function(yc) {
     enriched_years[[yc]]$batters %>%
@@ -1385,14 +1435,14 @@ for (yc in names(team_tbl_by_year)) {
       dplyr::select(player_id, pa_rv, adj_pred_runs_per_pa) %>%
       dplyr::mutate(yr_rank = yr_rank_map[yc], comb_w = pa_rv * yr_rank)
   }))
-
+  
   bat_weighted_ratings <- all_bat_rows %>%
     dplyr::group_by(player_id) %>%
     dplyr::summarise(
       weighted_rating = weighted.mean(adj_pred_runs_per_pa, comb_w, na.rm = TRUE),
       .groups = "drop"
     )
-
+  
   # ---- batters: baserunning rate (runs per PA) -------------------------------
   all_br_rows <- dplyr::bind_rows(lapply(player_yr_names, function(yc) {
     enriched_years[[yc]]$batters %>%
@@ -1400,14 +1450,14 @@ for (yc in names(team_tbl_by_year)) {
       dplyr::select(player_id, pa_rv, br_per_pa) %>%
       dplyr::mutate(yr_rank = yr_rank_map[yc], comb_w = pa_rv * yr_rank)
   }))
-
+  
   br_weighted_ratings <- all_br_rows %>%
     dplyr::group_by(player_id) %>%
     dplyr::summarise(
       weighted_br_per_pa = weighted.mean(br_per_pa, comb_w, na.rm = TRUE),
       .groups = "drop"
     )
-
+  
   # ---- pitchers: pitching rate -----------------------------------------------
   all_pit_rows <- dplyr::bind_rows(lapply(player_yr_names, function(yc) {
     enriched_years[[yc]]$pitchers %>%
@@ -1415,14 +1465,14 @@ for (yc in names(team_tbl_by_year)) {
       dplyr::select(player_id, pa_rv, adj_pred_runs_per_pa) %>%
       dplyr::mutate(yr_rank = yr_rank_map[yc], comb_w = pa_rv * yr_rank)
   }))
-
+  
   pit_weighted_ratings <- all_pit_rows %>%
     dplyr::group_by(player_id) %>%
     dplyr::summarise(
       weighted_rating = weighted.mean(adj_pred_runs_per_pa, comb_w, na.rm = TRUE),
       .groups = "drop"
     )
-
+  
   # ---- batters + pitchers: fielding rate (runs per defensive out) ------------
   all_fld_rows <- dplyr::bind_rows(lapply(player_yr_names, function(yc) {
     dplyr::bind_rows(
@@ -1432,14 +1482,14 @@ for (yc in names(team_tbl_by_year)) {
       dplyr::filter(is.finite(fld_per_out), fld_outs >= 1) %>%
       dplyr::mutate(yr_rank = yr_rank_map[yc], comb_w = fld_outs * yr_rank)
   }))
-
+  
   fld_weighted_ratings <- all_fld_rows %>%
     dplyr::group_by(player_id) %>%
     dplyr::summarise(
       weighted_fld_per_out = weighted.mean(fld_per_out, comb_w, na.rm = TRUE),
       .groups = "drop"
     )
-
+  
   # ---- patch most-recent player-mode year with multi-year weighted rates -----
   # Preserve single-season values; team ratings will use weighted, player tab
   # uses single-season values.
@@ -1461,7 +1511,7 @@ for (yc in names(team_tbl_by_year)) {
       fld_runs             = fld_per_out * fld_outs
     ) %>%
     dplyr::select(-weighted_rating, -weighted_br_per_pa, -weighted_fld_per_out)
-
+  
   enriched_years[[most_recent_player_yr]]$pitchers <-
     enriched_years[[most_recent_player_yr]]$pitchers %>%
     dplyr::mutate(
@@ -1476,7 +1526,7 @@ for (yc in names(team_tbl_by_year)) {
       fld_runs             = fld_per_out * fld_outs
     ) %>%
     dplyr::select(-weighted_rating, -weighted_fld_per_out)
-
+  
   # Rebuild tables for the most recent player-mode year.
   # Team ratings: only rebuild from player rows if there is NO team-level file for
   # this year (team-level files take precedence for team ratings).
@@ -1487,7 +1537,7 @@ for (yc in names(team_tbl_by_year)) {
                               team_tbl_by_year[[most_recent_player_yr]])
     if (!is.null(row)) standings_check[[most_recent_player_yr]] <- row
   }
-
+  
   # Player view always uses single-season values from the enriched data.
   players_view_by_year[[most_recent_player_yr]] <- build_player_view(
     enriched_years[[most_recent_player_yr]],
@@ -1505,7 +1555,7 @@ for (yc in names(team_tbl_by_year)) {
     seq_along(sort(as.integer(player_yr_names))),
     player_yr_names
   )
-
+  
   mp_all_pitchers <- dplyr::bind_rows(lapply(player_yr_names, function(yc) {
     enriched_years[[yc]]$pitchers %>%
       dplyr::filter(is.finite(adj_pred_runs_per_pa), pa_rv >= 1) %>%
@@ -1513,7 +1563,7 @@ for (yc in names(team_tbl_by_year)) {
       dplyr::mutate(yr_rank = yr_rank_map_mp[yc],
                     comb_w  = pa_rv * yr_rank)
   }))
-
+  
   mp_pitcher_ratings <- mp_all_pitchers %>%
     dplyr::group_by(player_id, player) %>%
     dplyr::summarise(
@@ -1614,8 +1664,9 @@ season_selector_row <- function(id_suffix, label_text) {
 app_theme <- bs_theme(
   version      = 5,
   bootswatch   = "litera",
-  primary      = "#1a365d",
-  "link-color" = "#2b6cb0",
+  primary      = "#17202a",
+  secondary    = "#b2342a",
+  "link-color" = "#9d2b1f",
   base_font    = font_google("Inter"),
   heading_font = font_google("Inter")
 )
@@ -2036,6 +2087,679 @@ custom_css <- HTML("
   .xruns-data-footer img { height: 16px; width: 16px; vertical-align: middle; }
 ")
 
+product_css <- HTML("
+  :root {
+    --xr-ink: #151922;
+    --xr-muted: #667085;
+    --xr-line: #d9dee8;
+    --xr-paper: #ffffff;
+    --xr-field: #f5f7fb;
+    --xr-red: #b2342a;
+    --xr-blue: #245c8f;
+    --xr-green: #24745a;
+    --xr-gold: #b4852d;
+  }
+
+  html, body {
+    background:
+      linear-gradient(180deg, #eef2f7 0, #f7f8fb 340px, #f7f8fb 100%);
+    color: var(--xr-ink);
+    letter-spacing: 0;
+  }
+
+  .navbar {
+    background: rgba(21, 25, 34, 0.97) !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 12px 34px rgba(21, 25, 34, 0.16);
+    min-height: 64px;
+    padding: 0 max(18px, calc((100vw - 1240px) / 2)) !important;
+    position: relative;
+  }
+  /* Center all navbar content vertically within the 64px bar */
+  .navbar > .container,
+  .navbar > .container-fluid,
+  .navbar > .container-sm,
+  .navbar > .container-md,
+  .navbar > .container-lg,
+  .navbar > .container-xl {
+    display: flex !important;
+    align-items: center !important;
+    min-height: 64px;
+  }
+  .navbar-brand {
+    color: #ffffff !important;
+    font-weight: 850;
+    letter-spacing: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    white-space: nowrap;
+  }
+  .navbar-brand .brand-sub {
+    color: rgba(255, 255, 255, 0.62);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    font-size: 0.68rem;
+    margin-left: 0;
+  }
+  .navbar-toggler,
+  .navbar-toggle {
+    --bs-navbar-toggler-border-color: transparent;
+    --bs-navbar-toggler-border-radius: 0;
+    border: 0 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    outline: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    -webkit-appearance: none;
+    appearance: none;
+    display: none !important;
+    position: relative;
+    z-index: 10000;
+    width: 52px;
+    height: 52px;
+    min-width: 52px;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s;
+  }
+  .navbar-toggler:hover,
+  .navbar-toggle:hover {
+    background: rgba(255,255,255,0.10) !important;
+  }
+  .navbar .navbar-toggler,
+  .navbar .navbar-toggle,
+  .navbar .navbar-toggler.collapsed,
+  .navbar .navbar-toggle.collapsed,
+  .navbar .navbar-toggler:not(.collapsed),
+  .navbar .navbar-toggle:not(.collapsed),
+  .navbar .navbar-toggler:hover,
+  .navbar .navbar-toggle:hover,
+  .navbar .navbar-toggler:focus,
+  .navbar .navbar-toggle:focus,
+  .navbar .navbar-toggler:active,
+  .navbar .navbar-toggle:active,
+  .navbar .navbar-toggler:focus-visible,
+  .navbar .navbar-toggle:focus-visible {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: 0 none transparent !important;
+    border-color: transparent !important;
+    border-radius: 0 !important;
+    border-style: none !important;
+    border-width: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+  @media (min-width: 761px) {
+    .navbar-expand-sm .navbar-toggler,
+    .navbar-toggler,
+    .navbar-toggle {
+      display: none !important;
+    }
+    .navbar-expand-sm .navbar-collapse,
+    .navbar-collapse {
+      display: flex !important;
+      flex-basis: auto !important;
+      visibility: visible !important;
+      height: auto !important;
+      overflow: visible !important;
+      justify-content: flex-end !important;
+      margin-left: auto !important;
+    }
+    .navbar-nav {
+      flex-direction: row !important;
+      gap: 2px;
+      margin-left: auto !important;
+    }
+    .nav-link {
+      padding-left: 0.55rem !important;
+      padding-right: 0.55rem !important;
+      font-size: clamp(0.72rem, 1.45vw, 0.86rem);
+    }
+  }
+  @media (max-width: 760px) {
+    .navbar .navbar-toggler,
+    .navbar .navbar-toggle,
+    .navbar-toggler,
+    .navbar-toggle {
+      display: flex !important;
+      width: 52px !important;
+      height: 52px !important;
+      min-width: 52px !important;
+      cursor: pointer !important;
+    }
+    .navbar-brand .brand-sub {
+      display: inline !important;
+      font-size: 0.58rem;
+      letter-spacing: 0.01em;
+    }
+    .navbar-brand {
+      gap: 7px;
+    }
+  }
+  .navbar-toggler:hover,
+  .navbar-toggle:hover,
+  .navbar-toggler:active,
+  .navbar-toggle:active {
+    background: transparent !important;
+    border: 0 !important;
+  }
+  .navbar-toggler:focus,
+  .navbar-toggle:focus {
+    box-shadow: none !important;
+    outline: none;
+  }
+  .navbar-toggler-icon,
+  .navbar-toggle .icon-bar {
+    position: relative;
+    width: 1.7rem;
+    height: 1.2rem;
+    opacity: 1;
+    filter: none;
+    background-image: none !important;
+    display: none !important;
+  }
+  .navbar-toggler:before,
+  .navbar-toggle:before {
+    content: '';
+    display: block;
+    width: 26px;
+    height: 2.5px;
+    background: #ffffff;
+    border-radius: 2px;
+    box-shadow:
+      0 8px 0 #ffffff,
+      0 16px 0 #ffffff;
+    pointer-events: none;
+    margin-top: -8px;
+  }
+  .nav-link {
+    color: rgba(255, 255, 255, 0.72) !important;
+    border-radius: 6px;
+    font-size: 0.86rem;
+    font-weight: 720;
+    letter-spacing: 0;
+    margin: 0 2px;
+  }
+  .nav-link.active,
+  .nav-link:hover {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.10);
+  }
+
+  .xruns-page {
+    width: min(1240px, calc(100vw - 32px));
+    margin: 22px auto 40px;
+  }
+  .xruns-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+    gap: 18px;
+    align-items: stretch;
+    margin-bottom: 18px;
+  }
+  .xruns-hero-main,
+  .xruns-hero-panel {
+    background: var(--xr-paper);
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 8px;
+    box-shadow: 0 18px 45px rgba(21, 25, 34, 0.08);
+  }
+  .xruns-hero-main {
+    position: relative;
+    overflow: hidden;
+    padding: 34px 36px 32px;
+    border-top: 5px solid var(--xr-red);
+  }
+  .xruns-hero-main:after {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto auto;
+    width: 42%;
+    height: 100%;
+    background:
+      repeating-linear-gradient(115deg,
+        rgba(36, 92, 143, 0.08) 0,
+        rgba(36, 92, 143, 0.08) 1px,
+        transparent 1px,
+        transparent 14px);
+    pointer-events: none;
+  }
+  .xruns-kicker {
+    color: var(--xr-red);
+    font-size: 0.72rem;
+    font-weight: 850;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .xruns-hero h1,
+  .xruns-feature-head h1 {
+    margin: 0;
+    color: var(--xr-ink);
+    font-size: clamp(2rem, 4vw, 4.2rem);
+    line-height: 0.95;
+    font-weight: 900;
+    letter-spacing: 0;
+    max-width: 800px;
+  }
+  .xruns-hero-copy,
+  .xruns-feature-copy {
+    position: relative;
+    max-width: 760px;
+    margin: 16px 0 0;
+    color: #485264;
+    font-size: 1.01rem;
+    line-height: 1.68;
+    z-index: 1;
+  }
+  .xruns-hero-panel {
+    padding: 24px;
+    display: grid;
+    align-content: center;
+    gap: 14px;
+    border-top: 5px solid var(--xr-blue);
+  }
+  .xruns-panel-label {
+    color: var(--xr-muted);
+    font-size: 0.72rem;
+    font-weight: 850;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .xruns-panel-number {
+    color: var(--xr-ink);
+    font-size: 2.55rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+  .xruns-panel-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .xruns-panel-stat {
+    background: #f7f8fb;
+    border: 1px solid var(--xr-line);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .xruns-panel-stat b {
+    display: block;
+    color: var(--xr-ink);
+    font-size: 1.24rem;
+    line-height: 1;
+  }
+  .xruns-panel-stat span {
+    display: block;
+    margin-top: 5px;
+    color: var(--xr-muted);
+    font-size: 0.74rem;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .xruns-feature-head {
+    background: var(--xr-paper);
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-top: 5px solid var(--xr-red);
+    border-radius: 8px;
+    padding: 30px 34px;
+    margin-bottom: 18px;
+    box-shadow: 0 18px 45px rgba(21, 25, 34, 0.07);
+  }
+  .xruns-feature-head h1 {
+    font-size: clamp(1.85rem, 3.2vw, 3.2rem);
+  }
+
+  .xruns-explainer-wrap,
+  .xruns-control-wrap,
+  .tab-body,
+  .section-heading,
+  .mp-selectors-row,
+  .xruns-action-row,
+  .xruns-chart-wrap,
+  .xruns-method-wrap {
+    background: transparent;
+  }
+  .xruns-explainer-wrap {
+    margin: 0 0 12px 0 !important;
+  }
+  .xruns-explainer-wrap details,
+  details.xruns-explainer {
+    background: #ffffff !important;
+    border: 1px solid rgba(21, 25, 34, 0.10) !important;
+    border-left: 1px solid rgba(21, 25, 34, 0.10) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 8px 22px rgba(21, 25, 34, 0.04) !important;
+  }
+  .xruns-explainer-wrap summary,
+  details.xruns-explainer summary {
+    color: #6b7280 !important;
+    font-size: 0.83rem !important;
+    font-weight: 720 !important;
+    letter-spacing: 0;
+    padding: 8px 12px !important;
+  }
+  .xruns-explainer-wrap summary i,
+  details.xruns-explainer summary i {
+    color: #7b8494;
+    font-size: 0.78rem;
+  }
+  .xruns-explainer-body {
+    padding: 0 12px 10px 12px;
+    color: #6b7280;
+    line-height: 1.55;
+    font-size: 0.78rem;
+  }
+  .info-stat {
+    background: #f2f4f8;
+    color: #6b7280;
+    border: 1px solid #e5e8ef;
+  }
+
+  .xruns-heading-row {
+    background: #ffffff;
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 8px 8px 0 0;
+    padding: 16px 18px 12px 18px;
+    margin-top: 12px;
+    gap: 10px;
+  }
+  .xruns-heading-text {
+    color: var(--xr-ink);
+    font-size: 1.12rem;
+    font-weight: 880;
+    white-space: normal;
+    line-height: 1.2;
+    min-width: 240px;
+  }
+  .xruns-season-chip .form-select,
+  .xruns-season-chip .form-control,
+  .xruns-season-row .form-select,
+  .xruns-season-row .form-control,
+  .mp-selector-card .form-select,
+  .mp-selector-card .form-control,
+  .selectize-input {
+    border: 1px solid #cfd6e2 !important;
+    border-radius: 6px !important;
+    background: #ffffff !important;
+    color: var(--xr-ink) !important;
+    font-weight: 720 !important;
+    box-shadow: none !important;
+  }
+  .mp-card-inputs .selectize-control {
+    margin-bottom: 0;
+  }
+  .mp-card-inputs .selectize-control.single {
+    background: #ffffff;
+    border: 1px solid #cfd6e2;
+    border-radius: 6px;
+    box-shadow: none;
+    overflow: visible;
+  }
+  .mp-card-inputs .selectize-control.single:focus-within {
+    border-color: #98a2b3;
+    box-shadow: 0 0 0 3px rgba(21, 25, 34, 0.06);
+  }
+  .mp-card-inputs .selectize-input,
+  .mp-card-inputs .selectize-input.focus,
+  .mp-card-inputs .selectize-input.input-active {
+    min-height: 45px;
+    padding: 10px 42px 10px 12px !important;
+    line-height: 1.35 !important;
+    background: #ffffff !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+  .mp-card-inputs .selectize-input:after {
+    right: 14px !important;
+  }
+  .mp-card-inputs .selectize-input > input {
+    box-shadow: none !important;
+  }
+  .mp-card-inputs .selectize-dropdown {
+    border: 1px solid #cfd6e2 !important;
+    border-radius: 6px !important;
+    box-shadow: 0 12px 26px rgba(21, 25, 34, 0.10) !important;
+  }
+  .xruns-period-chip {
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 5px 10px;
+    color: #5b6678;
+    font-size: 0.73rem;
+    font-weight: 780;
+  }
+  .xruns-period-chip:hover {
+    background: #f3f5f9;
+    color: var(--xr-ink);
+  }
+  .xruns-period-chip.active {
+    background: #151922;
+    color: #ffffff;
+    border-color: #151922;
+  }
+  .xruns-period-sep {
+    display: none;
+  }
+  .xruns-window-note,
+  .standings-warning {
+    background: #fff8e8;
+    border: 1px solid #efd392;
+    border-left: 5px solid var(--xr-gold);
+    border-radius: 8px;
+    color: #76531b;
+    margin: 0 0 14px 0;
+  }
+
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    padding: 0;
+    margin: 8px 0 10px 0;
+    overflow: visible;
+  }
+  .kpi-card {
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 6px;
+    padding: 8px 10px;
+    min-height: 54px;
+    box-shadow: 0 6px 14px rgba(21, 25, 34, 0.04);
+    position: relative;
+    gap: 7px;
+  }
+  .kpi-card:before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--xr-ink);
+    border-radius: 6px 0 0 6px;
+  }
+  .kpi-logo { width: 24px; height: 24px; }
+  .kpi-logo-placeholder { width: 24px; height: 24px; background: #eef2f7; color: var(--xr-ink); font-size: 9px; }
+  .kpi-label {
+    color: var(--xr-muted);
+    font-size: 0.58rem;
+    font-weight: 850;
+    letter-spacing: 0.07em;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .kpi-label i { color: var(--xr-ink); font-size: 0.66rem; }
+  .kpi-team {
+    color: var(--xr-ink);
+    font-size: 0.74rem;
+    max-width: 150px;
+  }
+  .kpi-value {
+    color: var(--xr-green);
+    font-size: 0.64rem;
+    font-weight: 820;
+  }
+
+  .tab-body {
+    background: #ffffff;
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-top: 0;
+    border-radius: 0 0 8px 8px;
+    padding: 16px 18px 22px 18px;
+    box-shadow: 0 14px 34px rgba(21, 25, 34, 0.06);
+  }
+  .section-heading {
+    color: var(--xr-ink);
+    font-size: 1.28rem;
+    font-weight: 890;
+    padding: 28px 4px 10px 4px;
+  }
+  .section-subheading {
+    color: var(--xr-muted);
+    font-weight: 650;
+  }
+  table.dataTable {
+    border-collapse: separate !important;
+    border-spacing: 0;
+    font-size: 13px;
+  }
+  table.dataTable thead th {
+    background: #f2f4f8 !important;
+    color: #505b6f;
+    border-bottom: 1px solid var(--xr-line) !important;
+    font-size: 0.68rem;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+  }
+  table.dataTable tbody td {
+    border-bottom: 1px solid #eef1f5;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+  table.dataTable tbody tr:hover {
+    background: #f6f8fb !important;
+  }
+  .dataTables_filter input,
+  .dataTables_length select {
+    border: 1px solid #cfd6e2;
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: #ffffff;
+  }
+
+  .card {
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 8px;
+    box-shadow: 0 14px 34px rgba(21, 25, 34, 0.06);
+  }
+  .card-header {
+    background: #f2f4f8 !important;
+    color: var(--xr-ink);
+    border-bottom: 1px solid var(--xr-line);
+    border-radius: 8px 8px 0 0 !important;
+    font-size: 0.78rem;
+    font-weight: 850;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  pre {
+    color: #283243;
+    background: #f7f8fb;
+    border-radius: 6px;
+    padding: 14px;
+  }
+
+  .mp-selectors-row {
+    padding: 0;
+    margin-bottom: 12px;
+    gap: 14px;
+  }
+  .mp-selector-card {
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 8px;
+    padding: 18px;
+    box-shadow: 0 14px 34px rgba(21, 25, 34, 0.06);
+    background: #ffffff;
+  }
+  .mp-vs-divider {
+    color: var(--xr-red);
+    font-weight: 900;
+    letter-spacing: 0.08em;
+  }
+  .mp-sub-label {
+    color: var(--xr-muted);
+    font-weight: 850;
+    letter-spacing: 0.08em;
+  }
+  .mp-team-logo-lg,
+  .mp-placeholder-lg { width: 72px; height: 72px; }
+  .mp-exp-runs,
+  .mp-sim-score {
+    color: var(--xr-ink);
+  }
+  .mp-win-bar {
+    height: 34px;
+    border-radius: 6px;
+    background: #eef2f7;
+  }
+  .btn-primary,
+  .btn-outline-secondary {
+    border-radius: 6px !important;
+    font-weight: 850 !important;
+    letter-spacing: 0.01em;
+  }
+  .btn-primary {
+    background: var(--xr-ink) !important;
+    border-color: var(--xr-ink) !important;
+  }
+  .btn-primary:hover {
+    background: #2a303b !important;
+    border-color: #2a303b !important;
+  }
+
+  .xruns-method-wrap {
+    padding: 0 !important;
+  }
+  .xruns-data-footer {
+    background: #151922;
+    color: rgba(255, 255, 255, 0.58);
+    border-top: 0;
+    margin-top: 36px;
+  }
+  .xruns-data-footer a {
+    color: #ffffff;
+  }
+
+  @media (max-width: 760px) {
+    .xruns-hero { grid-template-columns: 1fr; }
+    .kpi-row { display: none !important; }
+  }
+  @media (max-width: 640px) {
+    .xruns-page { width: min(100vw - 20px, 1240px); margin-top: 14px; }
+    .xruns-hero-main,
+    .xruns-feature-head { padding: 24px 20px; }
+    .xruns-hero h1,
+    .xruns-feature-head h1 { font-size: 2.15rem; line-height: 1; }
+    .xruns-panel-grid { grid-template-columns: 1fr; }
+    .kpi-row { display: none !important; }
+    .xruns-heading-row { align-items: flex-start; }
+    .xruns-heading-text { min-width: 100%; }
+    .xruns-period-group { flex-wrap: wrap; }
+    .tab-body { padding: 12px 10px 18px 10px; }
+    .mp-selectors-row { padding: 0; gap: 8px; }
+  }
+")
+
 # ---- UI ----------------------------------------------------------------------
 ui <- page_navbar(
   id    = "main_nav",
@@ -2050,17 +2774,16 @@ ui <- page_navbar(
       }
     })()",
     style   = "text-decoration:none; color:inherit; cursor:pointer;",
-    tags$span(class = "d-none d-md-inline",
-      "xRuns",
-      tags$span(class = "brand-sub", "an MLB Rating System")
-    ),
-    tags$span(class = "d-inline d-md-none", "xRuns")
+    tags$span(class = "xruns-brand-full",
+              "xRuns",
+              tags$span(class = "brand-sub", "an MLB Ratings System")
+    )
   ),
-  window_title = "xRuns: an MLB Rating System",
+  window_title = "xRuns: an MLB Ratings System",
   theme        = app_theme,
   fillable     = FALSE,
   navbar_options = navbar_options(collapsible = TRUE),
-
+  
   footer = tags$div(
     class = "xruns-data-footer",
     "Data sourced from",
@@ -2076,7 +2799,7 @@ ui <- page_navbar(
       "Baseball Savant"
     )
   ),
-
+  
   header = tagList(
     tags$head(
       tags$meta(name = "viewport",
@@ -2087,6 +2810,7 @@ ui <- page_navbar(
         href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
       ),
       tags$style(custom_css),
+      tags$style(product_css),
       # JS: handle year-change reset of time period chips back to Season
       tags$script(HTML("
         Shiny.addCustomMessageHandler('resetTimePeriod', function(msg) {
@@ -2096,77 +2820,96 @@ ui <- page_navbar(
             if (el.textContent.trim() === 'Season') el.classList.add('active');
           });
         });
+        // Auto-collapse navbar dropdown when a nav link is clicked on mobile
+        document.addEventListener('click', function(e) {
+          var link = e.target.closest('.navbar-nav .nav-link');
+          if (link) {
+            var collapse = document.querySelector('.navbar-collapse');
+            if (collapse && collapse.classList.contains('show')) {
+              collapse.classList.remove('show');
+            }
+          }
+        });
+        document.addEventListener('DOMContentLoaded', function() {
+          var style = document.createElement('style');
+          style.textContent = [
+            '.navbar .navbar-toggler,.navbar .navbar-toggle{display:none!important;background:transparent!important;background-color:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;outline:0!important;}',
+            '@media (max-width:760px){.navbar .navbar-toggler,.navbar .navbar-toggle{display:flex!important;width:52px!important;height:52px!important;min-width:52px!important;cursor:pointer!important;}}',
+            '@media (max-width:760px){.navbar-collapse{position:absolute;top:64px;left:0;right:0;background:rgba(21,25,34,0.97);padding:8px 16px 14px;z-index:9999;border-top:1px solid rgba(255,255,255,0.08);}}',
+            '@media (max-width:760px){.navbar-nav{flex-direction:column!important;gap:2px;}}',
+            '@media (max-width:760px){.navbar-collapse:not(.show){display:none!important;}}',
+            '.navbar .navbar-toggler-icon,.navbar .navbar-toggle .icon-bar{display:none!important;}',
+            '.navbar .navbar-toggler:before,.navbar .navbar-toggle:before{content:\"\";display:block;width:27px;height:2px;background:#fff;border-radius:2px;box-shadow:0 8px 0 #fff,0 16px 0 #fff;}'
+          ].join('\\n');
+          document.head.appendChild(style);
+        });
       "))
     )
   ),
-
+  
   # ---- Tab: Team Rankings ----
   nav_panel(
     title = tagList(tags$i(class = "fa-solid fa-ranking-star me-1"), "Team Rankings"),
-    # Info banner — collapsible, only on this tab
-    tags$div(
-      style = "margin: 10px 20px 0 20px;",
-      tags$details(
-        style = "background:#ffffff; border-left:4px solid #1a365d; border-radius:0 8px 8px 0;
-                 box-shadow:0 1px 3px rgba(0,0,0,0.05); font-size:13px; color:#334155; line-height:1.65;",
-        tags$summary(
-          style = "cursor:pointer; padding:10px 16px; font-weight:600; font-size:13px;
-                   color:#1a365d; list-style:none; display:flex; align-items:center; gap:6px;
-                   user-select:none;",
-          tags$span(style="font-size:11px; color:#94a3b8;", "▼"),
-          "How to read the ratings"
-        ),
-        tags$div(
-          style = "padding:4px 16px 12px 16px;",
-          tags$b("Overall"), " = expected run margin vs. an average MLB team in a 9-inning game. ",
-          tags$b("Offense"), " = hitting + baserunning runs scored above average per game. ",
-          tags$b("Defense"), " = pitching + fielding runs prevented above average per game.",
-          tags$br(),
-          tags$span(style = "color:#64748b; font-size:12px;",
-            "Regression model trained on ",
-            tags$span(class = "info-stat", textOutput("pool_bat_n", inline = TRUE)),
-            " batter-seasons and ",
-            tags$span(class = "info-stat", textOutput("pool_pit_n", inline = TRUE)),
-            " pitcher-seasons (2022–", most_recent_player_yr, "). ",
-            "Current season (", DEFAULT_YEAR, ") ratings use team-level expected stats applied through that model; ",
-            "baserunning and fielding are from current-year Statcast run-value data. ",
-            "Ratings are centered at 0 = league average each year."
+    tags$main(
+      class = "xruns-page",
+      # Info banner — collapsible, only on this tab
+      tags$div(
+        class = "xruns-explainer-wrap",
+        tags$details(
+          class = "xruns-explainer",
+          tags$summary(
+            tags$i(class = "fa-solid fa-circle-info me-2"),
+            "How to interpret the numbers"
+          ),
+          tags$div(
+            class = "xruns-explainer-body",
+            tags$b("Overall"), " = expected run margin vs. an average MLB team in a 9-inning game. ",
+            tags$b("Offense"), " = hitting + baserunning runs scored above average per game. ",
+            tags$b("Defense"), " = pitching + fielding runs prevented above average per game.",
+            tags$br(),
+            tags$span(
+              "Regression model trained on ",
+              tags$span(class = "info-stat", textOutput("pool_bat_n", inline = TRUE)),
+              " batter-seasons and ",
+              tags$span(class = "info-stat", textOutput("pool_pit_n", inline = TRUE)),
+              " pitcher-seasons (2022-", most_recent_player_yr, "). ",
+              "Current season (", DEFAULT_YEAR, ") ratings use team-level expected stats applied through that model; ",
+              "baserunning and fielding are from current-year Statcast run-value data. ",
+              "Ratings are centered at 0 = league average each year."
+            )
           )
         )
-      )
-    ),
-
-    # Heading row with time-period filter (only shown for years with snapshot history)
-    tags$div(
-      class = "xruns-heading-row",
-      tags$div(class = "xruns-heading-text",
-        textOutput("team_heading", inline = TRUE)
       ),
-      uiOutput("time_period_ui"),
-      tags$div(class = "xruns-season-chip", season_picker_inline("team"))
-    ),
-
-    # Fallback / window note (shown when time period filter uses graceful fallback)
-    uiOutput("window_note_ui"),
-
-    # KPI cards (hidden on mobile via CSS)
-    uiOutput("kpi_row"),
-
-    # Table
-    tags$div(class = "tab-body", DTOutput("team_table", height = "auto")),
-
-    # Scatter
-    tags$div(class = "section-heading",
-      "Offense vs. Defense",
-      tags$span(class = "section-subheading", "runs/game above average")
-    ),
-    tags$div(class = "tab-body", plotlyOutput("team_scatter", height = "620px"))
+      
+      # Heading row with time-period filter (only shown for years with snapshot history)
+      tags$div(
+        class = "xruns-heading-row",
+        tags$div(class = "xruns-heading-text",
+                 textOutput("team_heading", inline = TRUE)
+        ),
+        uiOutput("time_period_ui"),
+        tags$div(class = "xruns-season-chip", season_picker_inline("team"))
+      ),
+      
+      # Fallback / window note (shown when time period filter uses graceful fallback)
+      uiOutput("window_note_ui"),
+      
+      uiOutput("kpi_row"),
+      
+      tags$div(class = "tab-body", DTOutput("team_table", height = "auto")),
+      
+      tags$div(class = "section-heading",
+               "Offense vs. Defense",
+               tags$span(class = "section-subheading", "runs/game above average")
+      ),
+      tags$div(class = "tab-body", plotlyOutput("team_scatter", height = "620px"))
+    )
   ),
-
+  
   # ---- Tab: Matchup Simulator ----
   nav_panel(
     title = tagList(tags$i(class = "fa-solid fa-bolt me-1"), "Matchup Simulator"),
-
+    
     tags$head(tags$style(HTML("
       .mp-vs { font-size:1.5rem; font-weight:700; color:#cbd5e0;
                display:flex; align-items:center; justify-content:center; height:100%; }
@@ -2204,25 +2947,33 @@ ui <- page_navbar(
       #mp_starter_a .selectize-input,
       #mp_starter_b .selectize-input {
         font-size: 13px;
-        font-weight: 600;
-        color: #1a365d;
-        background: #f0f7ff;
-        border: 2px solid #3b82f6;
+        font-weight: 720;
+        color: #151922;
+        background: #ffffff;
+        border: 0;
         border-radius: 6px;
-        padding: 7px 10px;
+        padding: 10px 42px 10px 12px;
+        min-height: 45px;
+        box-shadow: none;
+        outline: none;
         cursor: pointer;
+      }
+      #mp_starter_a .selectize-input.focus,
+      #mp_starter_b .selectize-input.focus,
+      #mp_starter_a .selectize-input.input-active,
+      #mp_starter_b .selectize-input.input-active {
+        box-shadow: none;
       }
       #mp_starter_a .selectize-input:hover,
       #mp_starter_b .selectize-input:hover {
-        border-color: #1d4ed8;
-        background: #dbeafe;
+        background: #ffffff;
       }
       #mp_starter_a .selectize-dropdown,
       #mp_starter_b .selectize-dropdown {
         font-size: 13px;
-        border: 1px solid #3b82f6;
+        border: 1px solid #cfd6e2;
         border-radius: 6px;
-        box-shadow: 0 4px 12px rgba(59,130,246,0.15);
+        box-shadow: 0 12px 26px rgba(21,25,34,0.10);
       }
       #mp_starter_a .selectize-dropdown-content .option,
       #mp_starter_b .selectize-dropdown-content .option {
@@ -2231,8 +2982,8 @@ ui <- page_navbar(
       }
       #mp_starter_a .selectize-dropdown-content .option.active,
       #mp_starter_b .selectize-dropdown-content .option.active {
-        background: #dbeafe;
-        color: #1a365d;
+        background: #f2f4f8;
+        color: #151922;
         font-weight: 700;
       }
       /* Simulation card */
@@ -2246,182 +2997,193 @@ ui <- page_navbar(
       .mp-sim-note  { font-size:11px; color:#94a3b8; text-align:center;
                margin-top:6px; }
     "))),
-
-    tags$div(class = "section-heading", "Matchup Simulator"),
-    tags$div(
-      style = "padding:2px 20px 10px 20px; color:#64748b; font-size:13px; line-height:1.5;",
-      "Select two teams and their starting pitchers to project a matchup result."
-    ),
-
-    # ---- Selector cards — flex row, collapses cleanly on mobile ----
-    tags$div(
-      class = "mp-selectors-row",
-      # Team A card
+    
+    tags$main(
+      class = "xruns-page",
+      # ---- Selector cards — flex row, collapses cleanly on mobile ----
       tags$div(
-        class = "mp-selector-card",
-        uiOutput("mp_logo_a"),
+        class = "mp-selectors-row",
+        # Team A card
         tags$div(
-          class = "mp-card-inputs",
-          tags$div(class = "mp-sub-label", style = "margin-top:2px;", "Team"),
-          selectInput("mp_team_a", NULL,
-                      choices  = mp_team_choices,
-                      selected = mp_team_choices[[1]],
-                      width    = "100%"),
-          tags$div(class = "mp-sub-label", "Starting Pitcher"),
-          selectizeInput("mp_starter_a", NULL, choices = NULL, width = "100%",
-                         options = list(placeholder = "Select pitcher…",
-                                        dropdownParent = "body"))
+          class = "mp-selector-card",
+          uiOutput("mp_logo_a"),
+          tags$div(
+            class = "mp-card-inputs",
+            tags$div(class = "mp-sub-label", style = "margin-top:2px;", "Team"),
+            selectInput("mp_team_a", NULL,
+                        choices  = mp_team_choices,
+                        selected = mp_team_choices[[1]],
+                        width    = "100%"),
+            tags$div(class = "mp-sub-label", "Starting Pitcher"),
+            selectizeInput("mp_starter_a", NULL, choices = NULL, width = "100%",
+                           options = list(placeholder = "Select pitcher...",
+                                          dropdownParent = "body"))
+          )
+        ),
+        tags$div(class = "mp-vs-divider", "VS"),
+        # Team B card
+        tags$div(
+          class = "mp-selector-card",
+          uiOutput("mp_logo_b"),
+          tags$div(
+            class = "mp-card-inputs",
+            tags$div(class = "mp-sub-label", style = "margin-top:2px;", "Team"),
+            selectInput("mp_team_b", NULL,
+                        choices  = mp_team_choices,
+                        selected = mp_team_choices[[min(2L, length(mp_team_choices))]],
+                        width    = "100%"),
+            tags$div(class = "mp-sub-label", "Starting Pitcher"),
+            selectizeInput("mp_starter_b", NULL, choices = NULL, width = "100%",
+                           options = list(placeholder = "Select pitcher...",
+                                          dropdownParent = "body"))
+          )
         )
       ),
-      # VS divider
-      tags$div(class = "mp-vs-divider", "VS"),
-      # Team B card
+      
       tags$div(
-        class = "mp-selector-card",
-        uiOutput("mp_logo_b"),
-        tags$div(
-          class = "mp-card-inputs",
-          tags$div(class = "mp-sub-label", style = "margin-top:2px;", "Team"),
-          selectInput("mp_team_b", NULL,
-                      choices  = mp_team_choices,
-                      selected = mp_team_choices[[min(2L, length(mp_team_choices))]],
-                      width    = "100%"),
-          tags$div(class = "mp-sub-label", "Starting Pitcher"),
-          selectizeInput("mp_starter_b", NULL, choices = NULL, width = "100%",
-                         options = list(placeholder = "Select pitcher…",
-                                        dropdownParent = "body"))
-        )
+        class = "xruns-action-row",
+        style = "padding:6px 0 18px 0; display:flex; justify-content:center;",
+        actionButton("mp_predict", "Generate Matchup",
+                     class = "btn btn-primary",
+                     style = "padding:9px 30px; font-size:13px; min-width:190px;")
+      ),
+      
+      # ---- Results (rendered server-side) ----
+      uiOutput("mp_results"),
+      
+      # ---- Simulation result card (re-rolls independently) ----
+      uiOutput("mp_sim_card"),
+      
+      tags$div(
+        class = "tab-body",
+        style = "border-top:1px solid rgba(21,25,34,0.10); border-radius:8px;",
+        plotlyOutput("mp_heatmap", height = "500px")
       )
-    ),
-
-    tags$div(
-      style = "padding:4px 20px 16px 20px;",
-      actionButton("mp_predict", "Generate Matchup",
-                   class = "btn btn-primary",
-                   style = "font-weight:600; padding:8px 28px; font-size:13px;
-                            border-radius:8px;")
-    ),
-
-    # ---- Results (rendered server-side) ----
-    uiOutput("mp_results"),
-
-    # ---- Simulation result card (re-rolls independently) ----
-    uiOutput("mp_sim_card"),
-
-    tags$div(
-      style = "padding:0 20px 28px 20px;",
-      plotlyOutput("mp_heatmap", height = "500px")
     )
   ),
-
+  
   # ---- Tab: Player Rankings ----
   nav_panel(
     title = tagList(tags$i(class = "fa-solid fa-baseball-bat-ball me-1"), "Player Rankings"),
-    # Player ratings collapsible banner — mirrors the team ratings banner style
-    tags$div(
-      style = "margin: 10px 20px 0 20px;",
-      tags$details(
-        style = "background:#ffffff; border-left:4px solid #1a365d; border-radius:0 8px 8px 0;
-                 box-shadow:0 1px 3px rgba(0,0,0,0.05); font-size:13px; color:#334155; line-height:1.65;",
-        tags$summary(
-          style = "cursor:pointer; padding:10px 16px; font-weight:600; font-size:13px;
-                   color:#1a365d; list-style:none; display:flex; align-items:center; gap:6px;
-                   user-select:none;",
-          tags$span(style="font-size:11px; color:#94a3b8;", "▼"),
-          "How to read the player ratings"
+    tags$main(
+      class = "xruns-page",
+      tags$div(
+        class = "xruns-explainer-wrap",
+        tags$details(
+          class = "xruns-explainer",
+          tags$summary(
+            tags$i(class = "fa-solid fa-circle-info me-2"),
+            "How to interpret the numbers"
+          ),
+          tags$div(
+            class = "xruns-explainer-body",
+            "Each column measures how many extra runs per 9 innings that player contributes ",
+            "compared to a league-average player at that skill. For example, a ",
+            tags$b("Hitting"), " rating of +0.50 means that player generates 0.50 more runs ",
+            "per 9 innings than average through their hitting alone. A value of +1.0 is elite; ",
+            "most qualified players fall between -1.0 and +1.0. ",
+            tags$b("Overall"), " = Hitting + Baserunning + Pitching + Fielding, the total ",
+            "runs per 9 innings that player adds above an average player across all facets of the game."
+          )
         ),
-        tags$div(
-          style = "padding:4px 16px 12px 16px;",
-          "Each column measures how many extra runs per 9 innings that player contributes ",
-          "compared to a league-average player at that skill. For example, a ",
-          tags$b("Hitting"), " rating of +0.50 means that player generates 0.50 more runs ",
-          "per 9 innings than average through their hitting alone. A value of +1.0 is elite; ",
-          "most qualified players fall between −1.0 and +1.0. ",
-          tags$b("Overall"), " = Hitting + Baserunning + Pitching + Fielding — the total ",
-          "runs per 9 innings that player adds above an average player across all facets of the game."
-        )
-      )
-    ),
-    heading_with_filter_picker("players", "players_heading"),
-    tags$div(class = "tab-body", DTOutput("players_table"))
+      ),
+      heading_with_filter_picker("players", "players_heading"),
+      tags$div(class = "tab-body", DTOutput("players_table"))
+    )
   ),
-
+  
   # ---- Tab: Methodology ----
   nav_panel(
     title = tagList(tags$i(class = "fa-solid fa-flask me-1"), "Methodology"),
-    tags$div(style = "padding: 20px;",
-      layout_columns(
-        col_widths = c(6, 6),
-        card(
-          card_header("Batter model — runs/PA ~ xwOBA + BIP rate"),
-          verbatimTextOutput("bat_model_summary")
-        ),
-        card(
-          card_header("Pitcher model — runs/PA ~ xwOBA + xERA"),
-          verbatimTextOutput("pit_model_summary")
-        )
-      ),
-      card(
-        card_header("Approach"),
-        tags$div(style = "padding: 10px 16px; line-height:1.65; font-size:13.5px;",
-          tags$p("For each player we fit a weighted linear regression that maps ",
-                 tags$b("expected stats"), " (xwOBA and balls-in-play rate for batters; ",
-                 "xwOBA + xERA for pitchers) to their actual ", tags$b("run value per PA"),
-                 " from Statcast run-value tables. PA is the regression weight."),
-          tags$p("The model is trained on ", tags$b("all player-seasons from completed years (2022–2025) pooled"),
-                 ", not one year at a time. This gives larger, more stable coefficients ",
-                 "and allows any single season to serve as a partial out-of-sample check."),
-          tags$p("Predictions are centered by the ", tags$em("cohort"), " (year) mean, so ",
-                 "0 = league-average player ", tags$em("for that season"),
-                 ". Multiplying by 38 PA/game converts per-PA to per-game. ",
-                 "For completed seasons, teams aggregate their rostered players with a PA-weighted mean."),
-          tags$p(tags$b("Current-season ratings (", DEFAULT_YEAR, ")"),
-                 " use team-level expected stats (xwOBA, BIP rate) fed through the",
-                 " same regression coefficients trained on prior years. This captures the team's",
-                 " production as a whole without relying on individual player run values."),
-          tags$p(tags$b("Baserunning and fielding"),
-                 " are layered on top of the regression as independent",
-                 " Statcast run-value components (runner_runs and fielding total_runs,",
-                 " both already in 'runs above average' units). For the current season,",
-                 " actual year-to-date team run values are used directly.",
-                 " Offense = hitting + baserunning;",
-                 " Defense = pitching + fielding. Team baserunning is normalized to runs per",
-                 " team-PA \u00d7 38 PA/game; team fielding is normalized to runs per defensive",
-                 " fielder-out \u00d7 243 fielder-outs/game."),
-          tags$p(tags$b("Important:"), " the model is NOT trained on W-L records or team run totals. ",
-                 "The accuracy check below validates it against actual run differential per game.")
-        )
-      ),
-      card(
-        card_header("Model fit vs. actual run differential — all historical seasons"),
-        verbatimTextOutput("model_fit_summary")
-      ),
-
-      # ---- Standings accuracy check (moved from its own tab) ------------------
-      tags$hr(style = "margin: 24px 0; border-color: #e2e8f0;"),
-      tags$div(
-        style = "font-size:1.1rem; font-weight:700; color:#1a365d; margin-bottom:4px;
-                 letter-spacing:-0.02em;",
-        "Year-to-Year Model Accuracy vs. Actual Standings"
-      ),
-      tags$div(
-        style = "display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-                 padding: 4px 0 14px 0;",
-        tags$span(style = "font-size:13px; color:#64748b; font-weight:500;", "Season:"),
-        season_picker_inline("sc")
-      ),
-      tags$div(
-        style = "color:#475569; font-size:13.5px; line-height:1.65; margin-bottom:12px;",
+    tags$main(
+      class = "xruns-page",
+      tags$section(
+        class = "xruns-feature-head",
+        tags$div(class = "xruns-kicker", "Model notes and validation"),
+        tags$h1("The method behind the board."),
         tags$p(
-          "The model is fit purely on player expected stats. This section checks how ",
-          "closely the team-level overall rating tracks actual season run ",
-          "differential and wins. Residual = Overall Rating − Actual RDiff/G — ",
-          "a positive residual means the model was bullish vs. the team's real runs."
-        ),
-        tags$p(tags$b("If the current season has no final standings yet, this section will say so."))
+          class = "xruns-feature-copy",
+          "The ratings are trained from player-level expected statistics and then checked against actual team run differential. This page keeps the assumptions, formulas, and validation results close to the product instead of hiding them in a footnote."
+        )
       ),
-      uiOutput("standings_section"),
-      tags$div(style = "margin-top:16px;", plotlyOutput("standings_scatter", height = "580px"))
+      tags$div(class = "xruns-method-wrap",
+               layout_columns(
+                 col_widths = c(6, 6),
+                 card(
+                   card_header("Batter model — runs/PA ~ xwOBA + BIP rate"),
+                   verbatimTextOutput("bat_model_summary")
+                 ),
+                 card(
+                   card_header("Pitcher model — runs/PA ~ xwOBA + xERA"),
+                   verbatimTextOutput("pit_model_summary")
+                 )
+               ),
+               card(
+                 card_header("Approach"),
+                 tags$div(style = "padding: 10px 16px; line-height:1.65; font-size:13.5px;",
+                          tags$p("For each player we fit a weighted linear regression that maps ",
+                                 tags$b("expected stats"), " (xwOBA and balls-in-play rate for batters; ",
+                                 "xwOBA + xERA for pitchers) to their actual ", tags$b("run value per PA"),
+                                 " from Statcast run-value tables. PA is the regression weight."),
+                          tags$p("The model is trained on ", tags$b("all player-seasons from completed years (2022–2025) pooled"),
+                                 ", not one year at a time. This gives larger, more stable coefficients ",
+                                 "and allows any single season to serve as a partial out-of-sample check."),
+                          tags$p("Predictions are centered by the ", tags$em("cohort"), " (year) mean, so ",
+                                 "0 = league-average player ", tags$em("for that season"),
+                                 ". Multiplying by 38 PA/game converts per-PA to per-game. ",
+                                 "For completed seasons, teams aggregate their rostered players with a PA-weighted mean."),
+                          tags$p(tags$b("Current-season ratings (", DEFAULT_YEAR, ")"),
+                                 " use team-level expected stats (xwOBA, BIP rate) fed through the",
+                                 " same regression coefficients trained on prior years. This captures the team's",
+                                 " production as a whole without relying on individual player run values."),
+                          tags$p(tags$b("Baserunning and fielding"),
+                                 " are layered on top of the regression as independent",
+                                 " Statcast run-value components (runner_runs and fielding total_runs,",
+                                 " both already in 'runs above average' units). For the current season,",
+                                 " actual year-to-date team run values are used directly.",
+                                 " Offense = hitting + baserunning;",
+                                 " Defense = pitching + fielding. Team baserunning is normalized to runs per",
+                                 " team-PA \u00d7 38 PA/game; team fielding is normalized to runs per defensive",
+                                 " fielder-out \u00d7 243 fielder-outs/game."),
+                          tags$p(tags$b("Important:"), " the model is NOT trained on W-L records or team run totals. ",
+                                 "The accuracy check below validates it against actual run differential per game.")
+                 )
+               ),
+               card(
+                 card_header("Model fit vs. actual run differential — all historical seasons"),
+                 verbatimTextOutput("model_fit_summary")
+               ),
+               
+               # ---- Standings accuracy check (moved from its own tab) ------------------
+               tags$hr(style = "margin: 24px 0; border-color: #e2e8f0;"),
+               tags$div(
+                 style = "font-size:1.1rem; font-weight:700; color:#1a365d; margin-bottom:4px;
+                 letter-spacing:-0.02em;",
+                 "Year-to-Year Model Accuracy vs. Actual Standings"
+               ),
+               tags$div(
+                 style = "display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                 padding: 4px 0 14px 0;",
+                 tags$span(style = "font-size:13px; color:#64748b; font-weight:500;", "Season:"),
+                 season_picker_inline("sc")
+               ),
+               tags$div(
+                 style = "color:#475569; font-size:13.5px; line-height:1.65; margin-bottom:12px;",
+                 tags$p(
+                   "The model is fit purely on player expected stats. This section checks how ",
+                   "closely the team-level overall rating tracks actual season run ",
+                   "differential and wins. Residual = Overall Rating − Actual RDiff/G — ",
+                   "a positive residual means the model was bullish vs. the team's real runs."
+                 ),
+                 tags$p(tags$b("If the current season has no final standings yet, this section will say so."))
+               ),
+               uiOutput("standings_section"),
+               tags$div(
+                 class = "tab-body",
+                 style = "border-top:1px solid rgba(21,25,34,0.10); border-radius:8px; margin-top:16px;",
+                 plotlyOutput("standings_scatter", height = "580px")
+               )
+      )
     )
   )
 )
@@ -2430,16 +3192,16 @@ ui <- page_navbar(
 # Server
 # =============================================================================
 server <- function(input, output, session) {
-
+  
   # Pool stats for the info banner
   output$pool_bat_n <- renderText(format(models$bat_pool_n, big.mark = ","))
   output$pool_pit_n <- renderText(format(models$pit_pool_n, big.mark = ","))
-
+  
   # ---- Season picker sync ----
   picker_ids     <- c("season_year_team", "season_year_players",
                       "season_year_sc")
   current_year_rv <- reactiveVal(as.character(DEFAULT_YEAR))
-
+  
   for (pid in picker_ids) local({
     this_id <- pid
     observeEvent(input[[this_id]], {
@@ -2453,10 +3215,10 @@ server <- function(input, output, session) {
       session$sendCustomMessage("resetTimePeriod", list())
     }, ignoreInit = TRUE)
   })
-
+  
   current_year         <- reactive({ current_year_rv() })
   current_players_view <- reactive(players_view_by_year[[current_year()]])
-
+  
   # ---- Time period chip toggle (only for years with snapshot history) --------
   # Rendered as plain text chips — quiet by default, minimal visual footprint.
   # Clicking a chip calls Shiny.setInputValue so input$time_period updates
@@ -2464,11 +3226,11 @@ server <- function(input, output, session) {
   output$time_period_ui <- renderUI({
     yc        <- current_year()
     has_multi <- yc %in% names(all_snapshots_by_year) &&
-                 length(all_snapshots_by_year[[yc]]) > 1
+      length(all_snapshots_by_year[[yc]]) > 1
     if (!has_multi) return(NULL)
-
+    
     sel <- isolate(input$time_period) %||% "season"
-
+    
     make_chip <- function(value, label) {
       is_active <- identical(sel, value)
       tags$button(
@@ -2482,7 +3244,7 @@ server <- function(input, output, session) {
         label
       )
     }
-
+    
     tags$div(
       class = "xruns-period-group",
       make_chip("season", "Season"),
@@ -2494,31 +3256,31 @@ server <- function(input, output, session) {
       make_chip("1d", "Yesterday")
     )
   })
-
+  
   output$window_note_ui <- renderUI({
     yc <- current_year()
     tp <- input$time_period %||% "season"
     if (tp == "season") return(NULL)
     if (!(yc %in% names(all_snapshots_by_year))) return(NULL)
-
+    
     window_days <- switch(tp, "30d" = 30, "7d" = 7, "1d" = 1, Inf)
     wd <- compute_window_data(all_snapshots_by_year[[yc]], window_days)
     if (is.null(wd) || !isTRUE(wd$window_fallback)) return(NULL)
-
+    
     tags$div(class = "xruns-window-note",
-      tags$i(class = "fa-solid fa-circle-info me-1"),
-      wd$fallback_msg
+             tags$i(class = "fa-solid fa-circle-info me-1"),
+             wd$fallback_msg
     )
   })
-
+  
   # ---- Team table reactive — responds to year AND time period ----------------
   current_team_tbl <- reactive({
     yc <- current_year()
     tp <- input$time_period %||% "season"
-
+    
     has_snaps <- yc %in% names(all_snapshots_by_year) &&
-                 length(all_snapshots_by_year[[yc]]) > 1
-
+      length(all_snapshots_by_year[[yc]]) > 1
+    
     # ---- "Season" view: Bayesian-blended full-season + 14-day window ----------
     # When snapshots are available for the selected year, blend the full-season
     # rating with a 14-day rolling window using the recency scheme defined by
@@ -2527,35 +3289,35 @@ server <- function(input, output, session) {
     if (tp == "season") {
       if (!has_snaps) return(team_tbl_by_year[[yc]])
       standings_df <- if (!is.null(team_raw_years[[yc]]$standings))
-                        team_raw_years[[yc]]$standings
-                      else NULL
+        team_raw_years[[yc]]$standings
+      else NULL
       blended <- tryCatch(
         compute_blended_season_ratings(all_snapshots_by_year[[yc]], models, standings_df),
         error = function(e) NULL
       )
       return(blended %||% team_tbl_by_year[[yc]])
     }
-
+    
     # ---- Rolling window views (30d / 7d / 1d): raw delta, no blending --------
     window_days <- switch(tp, "30d" = 30, "7d" = 7, "1d" = 1, Inf)
     year_data   <- compute_window_data(all_snapshots_by_year[[yc]], window_days)
     if (is.null(year_data)) return(team_tbl_by_year[[yc]])
-
+    
     tryCatch(
       build_team_ratings_team_mode(year_data, models),
       error = function(e) team_tbl_by_year[[yc]]
     )
   })
-
+  
   # ---- Headings ----
   output$team_heading    <- renderText(sprintf("%s Team Efficiency Ratings", current_year()))
   output$players_heading <- renderText(sprintf("%s Player Leaderboard", current_year()))
   output$sc_heading      <- renderText(sprintf("%s — Model vs. Actual Standings", current_year()))
-
+  
   # ---- KPI cards ----
   output$kpi_row <- renderUI({
     tt <- current_team_tbl()
-
+    
     make_card <- function(label, row, value_fmt, css_class = "positive") {
       logo_tag <- if (!is.na(row$team_logo_espn)) {
         tags$img(src = row$team_logo_espn, class = "kpi-logo",
@@ -2564,32 +3326,32 @@ server <- function(input, output, session) {
         tags$div(class = "kpi-logo-placeholder", row$abbrev)
       }
       tags$div(class = "kpi-card",
-        logo_tag,
-        tags$div(class = "kpi-text",
-          tags$div(class = "kpi-label", label),
-          tags$div(class = "kpi-team",  row$team_name),
-          tags$div(class = paste("kpi-value", css_class), value_fmt)
-        )
+               logo_tag,
+               tags$div(class = "kpi-text",
+                        tags$div(class = "kpi-label", label),
+                        tags$div(class = "kpi-team",  row$team_name),
+                        tags$div(class = paste("kpi-value", css_class), value_fmt)
+               )
       )
     }
-
+    
     top_overall  <- tt[which.max(tt$overall),      ]
     top_off      <- tt[which.max(tt$off_rating),   ]
     top_pit      <- tt[which.max(tt$def_pitching), ]
     top_fld      <- tt[which.max(tt$def_fld),      ]
-
+    
     tags$div(class = "kpi-row",
-      make_card("\U0001F3C6 Best Overall",  top_overall,
-                sprintf("%+.2f runs/game", top_overall$overall)),
-      make_card("\U26BE Best Offense",      top_off,
-                sprintf("%+.2f runs/game", top_off$off_rating)),
-      make_card("\U26BE Best Pitching",     top_pit,
-                sprintf("%+.2f runs/game", top_pit$def_pitching)),
-      make_card("\U0001F6E1 Best Fielding", top_fld,
-                sprintf("%+.2f runs/game", top_fld$def_fld))
+             make_card(tagList(tags$i(class = "fa-solid fa-ranking-star"), "Best Overall"), top_overall,
+                       sprintf("%+.2f runs/game", top_overall$overall)),
+             make_card(tagList(tags$i(class = "fa-solid fa-baseball-bat-ball"), "Best Offense"), top_off,
+                       sprintf("%+.2f runs/game", top_off$off_rating)),
+             make_card(tagList(tags$i(class = "fa-solid fa-baseball"), "Best Pitching"), top_pit,
+                       sprintf("%+.2f runs/game", top_pit$def_pitching)),
+             make_card(tagList(tags$i(class = "fa-solid fa-shield-halved"), "Best Fielding"), top_fld,
+                       sprintf("%+.2f runs/game", top_fld$def_fld))
     )
   })
-
+  
   # ---- Signed render JS for DT ----
   signed_render <- JS(
     "function(data, type, row) {",
@@ -2601,17 +3363,17 @@ server <- function(input, output, session) {
     "  return data;",
     "}"
   )
-
+  
   # ---- Team Rankings table ----
   output$team_table <- renderDT({
     tt <- current_team_tbl()
-
+    
     # Pre-compute ranks for each sub-category (descending = higher is better)
     n_teams <- nrow(tt)
     off_rank <- rank(-tt$off_rating,   ties.method = "min")
     pit_rank <- rank(-tt$def_pitching, ties.method = "min")
     fld_rank <- rank(-tt$def_fld,      ties.method = "min")
-
+    
     # Helper: build an HTML cell with signed value + grey rank badge
     make_ranked_cell <- function(value, r) {
       val_str <- if (!is.finite(value)) "" else {
@@ -2623,7 +3385,7 @@ server <- function(input, output, session) {
         color, val_str, r
       )
     }
-
+    
     dt <- tt %>%
       mutate(
         ` `          = ifelse(
@@ -2652,12 +3414,12 @@ server <- function(input, output, session) {
         pit_sort,
         fld_sort
       )
-
+    
     # Column indices (0-indexed for DT columnDefs):
     #   0 Rank  1 Logo  2 Team  3 Overall  4 Offense  5 Pitching  6 Fielding
     #   7 off_sort (hidden)  8 pit_sort (hidden)  9 fld_sort (hidden)
     centered_cols  <- c(0, 3, 4, 5, 6)
-
+    
     datatable(
       dt,
       rownames = FALSE,
@@ -2696,22 +3458,22 @@ server <- function(input, output, session) {
                                              c("#b91c1c", "#64748b", "#047857")),
                   fontWeight = "bold")
   })
-
+  
   # ---- Offense vs Pitching scatter (plotly with team logos) ----
   output$team_scatter <- renderPlotly({
     tt <- current_team_tbl()
-
+    
     x_vals <- tt$off_rating
     y_vals <- tt$def_rating
-
+    
     x_pad <- diff(range(x_vals)) * 0.18
     y_pad <- diff(range(y_vals)) * 0.18
     x_rng <- c(min(x_vals) - x_pad, max(x_vals) + x_pad)
     y_rng <- c(min(y_vals) - y_pad, max(y_vals) + y_pad)
-
+    
     img_w <- diff(x_rng) * 0.075
     img_h <- diff(y_rng) * 0.075
-
+    
     hover_txt <- paste0(
       "<b>", tt$team_name, "</b>",
       "<br>Overall: ", sprintf("%+.2f", tt$overall),
@@ -2722,9 +3484,9 @@ server <- function(input, output, session) {
       "  (Pit ",       sprintf("%+.2f", tt$def_pitching),
       " + Fld ",       sprintf("%+.2f", tt$def_fld), ")"
     )
-
+    
     has_logos <- !all(is.na(tt$team_logo_espn))
-
+    
     p <- plot_ly() %>%
       # Quadrant reference lines
       add_segments(x = 0, xend = 0, y = y_rng[1], yend = y_rng[2],
@@ -2744,7 +3506,7 @@ server <- function(input, output, session) {
         hoverinfo   = "text",
         showlegend  = FALSE
       )
-
+    
     if (has_logos) {
       # Logo images at each data point
       logo_images <- lapply(seq_len(nrow(tt)), function(i) {
@@ -2776,13 +3538,13 @@ server <- function(input, output, session) {
           hoverinfo  = "none"
         )
     }
-
+    
     # Quadrant label positions: near the corners of the plot
     quad_lbl_x_pos <- x_rng[2] - diff(x_rng) * 0.03
     quad_lbl_x_neg <- x_rng[1] + diff(x_rng) * 0.03
     quad_lbl_y_pos <- y_rng[2] - diff(y_rng) * 0.04
     quad_lbl_y_neg <- y_rng[1] + diff(y_rng) * 0.04
-
+    
     quadrant_annotations <- list(
       list(x = quad_lbl_x_pos, y = quad_lbl_y_pos, xref = "x", yref = "y",
            text = "Good Offense\nGood Defense", showarrow = FALSE,
@@ -2801,7 +3563,7 @@ server <- function(input, output, session) {
            font = list(size = 10.5, color = "#b91c1c", family = "Inter"),
            align = "left", xanchor = "left", yanchor = "bottom")
     )
-
+    
     p %>% layout(
       images      = logo_images,
       annotations = quadrant_annotations,
@@ -2824,11 +3586,11 @@ server <- function(input, output, session) {
     ) %>%
       config(displayModeBar = FALSE)
   })
-
+  
   # ---- Player table (unified batters + pitchers) ----
   output$players_table <- renderDT({
     pv <- current_players_view()
-
+    
     # Team-mode years have no individual player data yet.
     if (is.null(pv)) {
       yr <- current_year()
@@ -2843,12 +3605,12 @@ server <- function(input, output, session) {
         options  = list(dom = "t", pageLength = 1)
       ))
     }
-
+    
     roles_selected <- input$players_role_filter
     if (is.null(roles_selected) || length(roles_selected) == 0) {
       roles_selected <- c("Hitter", "Pitcher")
     }
-
+    
     pv <- pv %>%
       dplyr::filter(Role %in% roles_selected) %>%
       dplyr::arrange(dplyr::desc(Overall)) %>%
@@ -2867,12 +3629,12 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::select(Rank, Logo, Player, Team, Role, PA,
                     Hitting, Baserunning, Pitching, Fielding, Overall)
-
+    
     # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Team=3, Role=4, PA=5,
     #   Hitting=6, Baserunning=7, Pitching=8, Fielding=9, Overall=10
     signed_cols   <- c(6, 7, 8, 9, 10)
     centered_cols <- c(0, 3, 4, 5, 6, 7, 8, 9, 10)
-
+    
     datatable(
       pv,
       rownames = FALSE,
@@ -2905,10 +3667,10 @@ server <- function(input, output, session) {
                   color = styleInterval(c(-0.01, 0.01),
                                         c("#b91c1c", "#64748b", "#047857")))
   })
-
+  
   # ---- Standings Check ----
   standings_for_year <- reactive({ standings_check[[current_year()]] })
-
+  
   output$standings_section <- renderUI({
     sc <- standings_for_year()
     if (is.null(sc) || nrow(sc) == 0) {
@@ -2923,7 +3685,7 @@ server <- function(input, output, session) {
       DTOutput("standings_table")
     )
   })
-
+  
   output$standings_corrs <- renderPrint({
     sc <- standings_for_year()
     if (is.null(sc) || nrow(sc) == 0) return(invisible(NULL))
@@ -2935,7 +3697,7 @@ server <- function(input, output, session) {
       pearson, spearman, rmse, nrow(sc)
     ))
   })
-
+  
   output$standings_table <- renderDT({
     sc <- standings_for_year()
     if (is.null(sc) || nrow(sc) == 0) return(NULL)
@@ -2956,10 +3718,10 @@ server <- function(input, output, session) {
                   color = styleInterval(c(-0.01, 0.01),
                                         c("#b91c1c", "#64748b", "#047857")))
   })
-
+  
   output$standings_scatter <- renderPlotly({
     sc <- standings_for_year()
-
+    
     if (is.null(sc) || nrow(sc) == 0) {
       return(
         plot_ly() %>%
@@ -2975,27 +3737,27 @@ server <- function(input, output, session) {
           )
       )
     }
-
+    
     # Join logos back in
     sc <- sc %>%
       left_join(TEAM_META %>% select(abbrev, team_logo_espn),
                 by = c("Team" = "abbrev"), suffix = c("", ".meta")) %>%
       mutate(team_logo_espn = dplyr::coalesce(team_logo_espn, team_logo_espn.meta))
-
+    
     rng_all <- range(c(sc$overall, sc$rdiff_per_game))
     pad     <- diff(rng_all) * 0.12
     rng     <- c(rng_all[1] - pad, rng_all[2] + pad)
     img_sz  <- diff(rng) * 0.065
-
+    
     hover_txt <- paste0(
       "<b>", sc$Team, " — ", sc$`Team Name`, "</b>",
       "<br>Model Rating: ", sprintf("%+.2f", sc$overall),
       "<br>Actual RDiff/G: ", sprintf("%+.2f", sc$rdiff_per_game),
       "<br>Record: ", sc$`Actual W`, "–", sc$`Actual L`
     )
-
+    
     has_logos <- !all(is.na(sc$team_logo_espn))
-
+    
     p <- plot_ly() %>%
       add_segments(x = rng[1], xend = rng[2], y = rng[1], yend = rng[2],
                    line = list(color = "#cbd5e0", width = 1, dash = "dot"),
@@ -3016,7 +3778,7 @@ server <- function(input, output, session) {
         hoverinfo  = "text",
         showlegend = FALSE
       )
-
+    
     if (has_logos) {
       logo_images <- lapply(seq_len(nrow(sc)), function(i) {
         list(
@@ -3039,7 +3801,7 @@ server <- function(input, output, session) {
         showlegend = FALSE, hoverinfo = "none"
       )
     }
-
+    
     # Annotations: Q2 (upper-left) = Overperforming, Q4 (lower-right) = Underperforming
     # Q2: high actual run diff, low model rating → team beat expectations
     # Q4: low actual run diff, high model rating → team fell short of expectations
@@ -3063,7 +3825,7 @@ server <- function(input, output, session) {
         align = "right", xanchor = "right", yanchor = "bottom"
       )
     )
-
+    
     p %>% layout(
       images      = logo_images,
       annotations = sc_annotations,
@@ -3084,7 +3846,7 @@ server <- function(input, output, session) {
     ) %>%
       config(displayModeBar = FALSE)
   })
-
+  
   # ---- Methodology ----
   output$bat_model_summary <- renderPrint({
     s <- summary(models$bat_model)
@@ -3095,7 +3857,7 @@ server <- function(input, output, session) {
         " | Adj R²:", round(s$adj.r.squared, 4), "\n\n")
     print(s$coefficients)
   })
-
+  
   output$pit_model_summary <- renderPrint({
     s <- summary(models$pit_model)
     cat("Weighted OLS (pooled ", paste(range(models$pit_pool_years), collapse = "–"),
@@ -3105,7 +3867,7 @@ server <- function(input, output, session) {
         " | Adj R²:", round(s$adj.r.squared, 4), "\n\n")
     print(s$coefficients)
   })
-
+  
   output$model_fit_summary <- renderPrint({
     rows <- list()
     for (yc in names(standings_check)) {
@@ -3135,11 +3897,11 @@ server <- function(input, output, session) {
     ))
     cat("NOTE: the model is trained on player-level runs/PA only. Team records were never used as training data.\n")
   })
-
+  
   # ============================================================================
   # Matchup Simulator — server
   # ============================================================================
-
+  
   # Small helper: return logo img tag (lg or sm size) or a text placeholder.
   mp_logo_tag <- function(abbrev, size = c("lg", "sm")) {
     size <- match.arg(size)
@@ -3152,11 +3914,11 @@ server <- function(input, output, session) {
     cls <- if (size == "lg") "mp-team-logo-lg" else "mp-team-logo-sm"
     tags$img(src = meta$team_logo_espn[1], class = cls, alt = abbrev)
   }
-
+  
   # Logo renderers for the selector cards (update reactively with team choice).
   output$mp_logo_a <- renderUI({ mp_logo_tag(req(input$mp_team_a), "lg") })
   output$mp_logo_b <- renderUI({ mp_logo_tag(req(input$mp_team_b), "lg") })
-
+  
   # Populate pitcher dropdowns whenever team selection changes.
   observe({
     req(input$mp_team_a)
@@ -3164,47 +3926,54 @@ server <- function(input, output, session) {
       dplyr::filter(abbrev == input$mp_team_a) %>%
       dplyr::arrange(dplyr::desc(pa_rv))
     ch <- setNames(as.character(ps$player_id), ps$player)
-    updateSelectInput(session, "mp_starter_a", choices = ch,
-                      selected = if (length(ch) > 0) ch[[1]] else NULL)
+    updateSelectizeInput(session, "mp_starter_a", choices = ch,
+                         selected = if (length(ch) > 0) ch[[1]] else character(0))
   })
-
+  
   observe({
     req(input$mp_team_b)
     ps <- mp_current_pitchers %>%
       dplyr::filter(abbrev == input$mp_team_b) %>%
       dplyr::arrange(dplyr::desc(pa_rv))
     ch <- setNames(as.character(ps$player_id), ps$player)
-    updateSelectInput(session, "mp_starter_b", choices = ch,
-                      selected = if (length(ch) > 0) ch[[1]] else NULL)
+    updateSelectizeInput(session, "mp_starter_b", choices = ch,
+                         selected = if (length(ch) > 0) ch[[1]] else character(0))
   })
-
+  
   # Core prediction (fires when button is clicked).
   mp_result <- eventReactive(input$mp_predict, {
-    req(input$mp_team_a, input$mp_team_b,
-        input$mp_starter_a, input$mp_starter_b)
-
+    req(input$mp_team_a, input$mp_team_b)
+    
     tt <- current_team_tbl()
     ta <- tt %>% dplyr::filter(abbrev == input$mp_team_a)
     tb <- tt %>% dplyr::filter(abbrev == input$mp_team_b)
-
-    sa <- mp_current_pitchers %>%
-      dplyr::filter(player_id == suppressWarnings(as.integer(input$mp_starter_a)),
-                    abbrev    == input$mp_team_a)
-    sb <- mp_current_pitchers %>%
-      dplyr::filter(player_id == suppressWarnings(as.integer(input$mp_starter_b)),
-                    abbrev    == input$mp_team_b)
-
+    
+    pitcher_pool_a <- mp_current_pitchers %>%
+      dplyr::filter(abbrev == input$mp_team_a) %>%
+      dplyr::arrange(dplyr::desc(pa_rv))
+    pitcher_pool_b <- mp_current_pitchers %>%
+      dplyr::filter(abbrev == input$mp_team_b) %>%
+      dplyr::arrange(dplyr::desc(pa_rv))
+    
+    starter_a_id <- suppressWarnings(as.integer(input$mp_starter_a))
+    starter_b_id <- suppressWarnings(as.integer(input$mp_starter_b))
+    if (is.na(starter_a_id) && nrow(pitcher_pool_a) > 0) starter_a_id <- pitcher_pool_a$player_id[1]
+    if (is.na(starter_b_id) && nrow(pitcher_pool_b) > 0) starter_b_id <- pitcher_pool_b$player_id[1]
+    
+    sa <- pitcher_pool_a %>% dplyr::filter(player_id == starter_a_id)
+    sb <- pitcher_pool_b %>% dplyr::filter(player_id == starter_b_id)
+    
     if (nrow(ta) == 0 || nrow(tb) == 0 ||
         nrow(sa) == 0 || nrow(sb) == 0) return(NULL)
-
+    
     LEAGUE_AVG <- 4.5   # typical MLB runs per team per 9-inning game
     SP_INN     <- 5
     TOT_INN    <- 9
-
+    
     # Starter rating in runs/game units (positive = better, saves more runs).
     sa_rpg <- sa$final_rating[1] * PA_PER_GAME
     sb_rpg <- sb$final_rating[1] * PA_PER_GAME
-
+    
     # Back-calculate bullpen rating from team PITCHING rate (fielding excluded, since
     # fielding value is shared by all pitchers and is added to the composite defense
     # separately below).
@@ -3218,22 +3987,22 @@ server <- function(input, output, session) {
       bp_rate   <- (team_rate * tot_pa - sp_pa * sp_rate) / bp_pa
       bp_rate * PA_PER_GAME
     }
-
+    
     sa_bp_rpg <- calc_bp_rpg(ta, sa$pa_rv[1], sa_rpg)
     sb_bp_rpg <- calc_bp_rpg(tb, sb$pa_rv[1], sb_rpg)
-
+    
     # Composite pitching contribution for this matchup (5 SP inn + 4 BP inn),
     # PLUS the opposing team's season fielding contribution (constant).
     tb_pitch_vs_a <- sb_rpg * (SP_INN / TOT_INN) + sb_bp_rpg * ((TOT_INN - SP_INN) / TOT_INN)
     ta_pitch_vs_b <- sa_rpg * (SP_INN / TOT_INN) + sa_bp_rpg * ((TOT_INN - SP_INN) / TOT_INN)
-
+    
     tb_def_vs_a <- tb_pitch_vs_a + tb$def_fld[1]
     ta_def_vs_b <- ta_pitch_vs_b + ta$def_fld[1]
-
+    
     # Expected runs: league_avg + own offense (hitting + BR) - opponent defense (pit + fld).
     exp_a <- max(0.5, min(20, LEAGUE_AVG + ta$off_rating[1] - tb_def_vs_a))
     exp_b <- max(0.5, min(20, LEAGUE_AVG + tb$off_rating[1] - ta_def_vs_b))
-
+    
     # Score probability matrix via Negative Binomial approximation.
     # NB has variance = mu + mu^2/DISP_SIZE, capturing the over-dispersion
     # (heavier tails) observed in real MLB run distributions vs. Poisson.
@@ -3242,13 +4011,13 @@ server <- function(input, output, session) {
     prob_b    <- dnbinom(runs_seq, mu = exp_b, size = DISP_SIZE)
     score_mat <- outer(prob_a, prob_b)
     # score_mat[i, j] = P(Team A scores runs_seq[i], Team B scores runs_seq[j])
-
+    
     cmp_a_wins  <- outer(runs_seq, runs_seq, ">")
     cmp_b_wins  <- outer(runs_seq, runs_seq, "<")
     p_a_wins_9  <- sum(score_mat[cmp_a_wins])
     p_b_wins_9  <- sum(score_mat[cmp_b_wins])
     p_tied_9    <- sum(diag(score_mat))
-
+    
     # Baseball has no ties. Model extra innings by distributing the tied-after-9
     # probability proportionally to each team's expected runs — the higher-scoring
     # team has a slight edge in extras (same logic a Pythagorean formula uses).
@@ -3257,13 +4026,13 @@ server <- function(input, output, session) {
     p_a_wins <- p_a_wins_9 + p_tied_9 * extras_a
     p_b_wins <- p_b_wins_9 + p_tied_9 * extras_b
     p_tie    <- 0  # no ties in baseball
-
+    
     top_scores <- expand.grid(runs_a = runs_seq, runs_b = runs_seq) %>%
       dplyr::mutate(prob = dnbinom(runs_a, mu = exp_a, size = DISP_SIZE) * dnbinom(runs_b, mu = exp_b, size = DISP_SIZE)) %>%
       dplyr::filter(runs_a != runs_b) %>%   # ties are impossible in baseball
       dplyr::arrange(dplyr::desc(prob)) %>%
       head(5)
-
+    
     list(
       ta = ta, tb = tb, sa = sa, sb = sb,
       exp_a = exp_a, exp_b = exp_b,
@@ -3276,105 +4045,129 @@ server <- function(input, output, session) {
       tb_def_vs_a   = tb_def_vs_a,   ta_def_vs_b   = ta_def_vs_b
     )
   }, ignoreNULL = TRUE)
-
+  
   # Renders the full results panel (header, expected runs, win bar, pitchers, scores).
+  mp_team_color <- function(row, fallback = "#151922") {
+    col <- if ("team_color" %in% names(row)) suppressWarnings(as.character(row$team_color[1])) else NA_character_
+    if ((is.na(col) || !grepl("^#[0-9A-Fa-f]{6}$", col)) && "abbrev" %in% names(row)) {
+      idx <- match(row$abbrev[1], TEAM_META$abbrev)
+      if (!is.na(idx) && "team_color" %in% names(TEAM_META)) {
+        col <- suppressWarnings(as.character(TEAM_META$team_color[idx]))
+      }
+    }
+    if (is.na(col) || !grepl("^#[0-9A-Fa-f]{6}$", col)) fallback else col
+  }
+  
+  contrast_text <- function(hex) {
+    hex <- gsub("#", "", hex)
+    rgb <- grDevices::col2rgb(paste0("#", hex)) / 255
+    rgb <- ifelse(rgb <= 0.03928, rgb / 12.92, ((rgb + 0.055) / 1.055) ^ 2.4)
+    lum <- 0.2126 * rgb[1, ] + 0.7152 * rgb[2, ] + 0.0722 * rgb[3, ]
+    ifelse(lum > 0.48, "#151922", "#ffffff")
+  }
+  
   output$mp_results <- renderUI({
     res <- mp_result()
     if (is.null(res)) return(NULL)
-
+    
     ta <- res$ta; tb <- res$tb
+    col_a <- mp_team_color(ta)
+    col_b <- mp_team_color(tb, "#334155")
+    txt_a <- contrast_text(col_a)
+    txt_b <- contrast_text(col_b)
     pct_a <- round(res$p_a_wins * 100, 1)
     pct_b <- 100 - pct_a   # derived so the two always sum exactly to 100
     pct_t <- round(res$p_tie    * 100, 1)
-
+    
     # Most likely scores rows.
     score_rows <- lapply(seq_len(nrow(res$top_scores)), function(i) {
       r      <- res$top_scores[i, ]
       winner <- if (r$runs_a > r$runs_b) ta$abbrev else tb$abbrev
-      badge_col <- if (r$runs_a > r$runs_b) "#1a365d" else "#b91c1c"
+      badge_col <- if (r$runs_a > r$runs_b) col_a else col_b
+      badge_txt <- if (r$runs_a > r$runs_b) txt_a else txt_b
       tags$div(class = "mp-score-row",
-        tags$span(class = "mp-score-label",
-          sprintf("%s  %d – %d  %s", ta$abbrev, r$runs_a, r$runs_b, tb$abbrev)),
-        tags$div(style = "display:flex; align-items:center; gap:8px;",
-          tags$span(style = sprintf("font-size:11px; font-weight:700; color:#fff;
+               tags$span(class = "mp-score-label",
+                         sprintf("%s  %d – %d  %s", ta$abbrev, r$runs_a, r$runs_b, tb$abbrev)),
+               tags$div(style = "display:flex; align-items:center; gap:8px;",
+                        tags$span(style = sprintf("font-size:11px; font-weight:700; color:%s;
                                      background:%s; border-radius:4px; padding:2px 7px;",
-                                    badge_col), winner),
-          tags$span(class = "mp-score-pct", sprintf("%.1f%%", r$prob * 100))
-        )
+                                                  badge_txt, badge_col), winner),
+                        tags$span(class = "mp-score-pct", sprintf("%.1f%%", r$prob * 100))
+               )
       )
     })
-
+    
     tags$div(
       style = "padding:0 20px 8px 20px;",
-
+      
       # Header: logos + team names + season ratings.
       card(
-        style = "margin-bottom:14px;",
+        style = "margin-bottom:14px; border-top:4px solid #151922;",
         card_body(
           tags$div(class = "mp-header-row",
-            tags$div(class = "mp-team-block",
-              mp_logo_tag(ta$abbrev, "lg"),
-              tags$div(class = "mp-team-name-lg", ta$team_name),
-              tags$div(class = "mp-sub-label",
-                sprintf("Off %+.2f  |  Def %+.2f", ta$off_rating, ta$def_rating))
-            ),
-            tags$div(style = "font-size:1.6rem; font-weight:700; color:#cbd5e0;
+                   tags$div(class = "mp-team-block",
+                            mp_logo_tag(ta$abbrev, "lg"),
+                            tags$div(class = "mp-team-name-lg", style = sprintf("color:%s;", col_a), ta$team_name),
+                            tags$div(class = "mp-sub-label",
+                                     sprintf("Off %+.2f  |  Def %+.2f", ta$off_rating, ta$def_rating))
+                   ),
+                   tags$div(style = "font-size:1.6rem; font-weight:700; color:#cbd5e0;
                               padding:0 20px;", "VS"),
-            tags$div(class = "mp-team-block",
-              mp_logo_tag(tb$abbrev, "lg"),
-              tags$div(class = "mp-team-name-lg", tb$team_name),
-              tags$div(class = "mp-sub-label",
-                sprintf("Off %+.2f  |  Def %+.2f", tb$off_rating, tb$def_rating))
-            )
+                   tags$div(class = "mp-team-block",
+                            mp_logo_tag(tb$abbrev, "lg"),
+                            tags$div(class = "mp-team-name-lg", style = sprintf("color:%s;", col_b), tb$team_name),
+                            tags$div(class = "mp-sub-label",
+                                     sprintf("Off %+.2f  |  Def %+.2f", tb$off_rating, tb$def_rating))
+                   )
           )
         )
       ),
-
+      
       # Expected runs side by side.
       layout_columns(
         col_widths = c(6, 6),
         card(
-          style = "text-align:center; margin-bottom:14px;",
+          style = sprintf("text-align:center; margin-bottom:14px; border-top:4px solid %s;", col_a),
           card_header(paste(ta$abbrev, "Expected Runs")),
           card_body(
-            tags$div(class = "mp-exp-runs", sprintf("%.2f", res$exp_a)),
+            tags$div(class = "mp-exp-runs", style = sprintf("color:%s;", col_a), sprintf("%.2f", res$exp_a)),
             tags$div(style = "margin-top:10px; font-size:12px; color:#64748b; line-height:1.8;",
-              tags$div(sprintf("Offense (hit + BR): %+.2f rpg", ta$off_rating)),
-              tags$div(sprintf("Opp. defense (pit + fld): %+.2f rpg", -res$tb_def_vs_a))
+                     tags$div(sprintf("Offense (hit + BR): %+.2f rpg", ta$off_rating)),
+                     tags$div(sprintf("Opp. defense (pit + fld): %+.2f rpg", -res$tb_def_vs_a))
             )
           )
         ),
         card(
-          style = "text-align:center; margin-bottom:14px;",
+          style = sprintf("text-align:center; margin-bottom:14px; border-top:4px solid %s;", col_b),
           card_header(paste(tb$abbrev, "Expected Runs")),
           card_body(
-            tags$div(class = "mp-exp-runs", sprintf("%.2f", res$exp_b)),
+            tags$div(class = "mp-exp-runs", style = sprintf("color:%s;", col_b), sprintf("%.2f", res$exp_b)),
             tags$div(style = "margin-top:10px; font-size:12px; color:#64748b; line-height:1.8;",
-              tags$div(sprintf("Offense (hit + BR): %+.2f rpg", tb$off_rating)),
-              tags$div(sprintf("Opp. defense (pit + fld): %+.2f rpg", -res$ta_def_vs_b))
+                     tags$div(sprintf("Offense (hit + BR): %+.2f rpg", tb$off_rating)),
+                     tags$div(sprintf("Opp. defense (pit + fld): %+.2f rpg", -res$ta_def_vs_b))
             )
           )
         )
       ),
-
+      
       # Win probability bar.
       card(
         style = "margin-bottom:14px;",
         card_header("Win Probability"),
         card_body(
           tags$div(class = "mp-win-bar", style = "margin-bottom:8px;",
-            tags$div(class = "mp-win-seg",
-              style = sprintf("width:%.1f%%; background:#1a365d;", pct_a),
-              if (pct_a >= 9) paste0(ta$abbrev, "  ", pct_a, "%") else ""),
-            tags$div(class = "mp-win-seg",
-              style = sprintf("width:%.1f%%; background:#b91c1c;", pct_b),
-              if (pct_b >= 9) paste0(pct_b, "%  ", tb$abbrev) else "")
+                   tags$div(class = "mp-win-seg",
+                            style = sprintf("width:%.1f%%; background:%s; color:%s;", pct_a, col_a, txt_a),
+                            if (pct_a >= 9) paste0(ta$abbrev, "  ", pct_a, "%") else ""),
+                   tags$div(class = "mp-win-seg",
+                            style = sprintf("width:%.1f%%; background:%s; color:%s;", pct_b, col_b, txt_b),
+                            if (pct_b >= 9) paste0(pct_b, "%  ", tb$abbrev) else "")
           ),
           tags$div(style = "font-size:12px; color:#94a3b8; text-align:center;",
-            sprintf("%s: %.1f%%   |   %s: %.1f%%", ta$abbrev, pct_a, tb$abbrev, pct_b))
+                   sprintf("%s: %.1f%%   |   %s: %.1f%%", ta$abbrev, pct_a, tb$abbrev, pct_b))
         )
       ),
-
+      
       # Starting pitcher cards.
       card(
         style = "margin-bottom:14px;",
@@ -3384,34 +4177,34 @@ server <- function(input, output, session) {
             col_widths = c(6, 6),
             tags$div(
               tags$div(class = "mp-sub-label", style = "margin-bottom:6px;",
-                ta$abbrev),
-              tags$div(class = "mp-pitcher-chip",
-                mp_logo_tag(ta$abbrev, "sm"),
-                tags$div(
-                  tags$div(class = "mp-chip-text-main", res$sa$player[1]),
-                  tags$div(class = "mp-chip-text-sub",
-                    sprintf("Pitching run value: %+.2f rpg  ·  %d PA",
-                            res$sa_rpg, res$sa$pa_rv[1]))
-                )
+                       ta$abbrev),
+              tags$div(class = "mp-pitcher-chip", style = sprintf("border-left:4px solid %s;", col_a),
+                       mp_logo_tag(ta$abbrev, "sm"),
+                       tags$div(
+                         tags$div(class = "mp-chip-text-main", res$sa$player[1]),
+                         tags$div(class = "mp-chip-text-sub",
+                                  sprintf("Pitching run value: %+.2f rpg  ·  %d PA",
+                                          res$sa_rpg, res$sa$pa_rv[1]))
+                       )
               )
             ),
             tags$div(
               tags$div(class = "mp-sub-label", style = "margin-bottom:6px;",
-                tb$abbrev),
-              tags$div(class = "mp-pitcher-chip",
-                mp_logo_tag(tb$abbrev, "sm"),
-                tags$div(
-                  tags$div(class = "mp-chip-text-main", res$sb$player[1]),
-                  tags$div(class = "mp-chip-text-sub",
-                    sprintf("Pitching run value: %+.2f rpg  ·  %d PA",
-                            res$sb_rpg, res$sb$pa_rv[1]))
-                )
+                       tb$abbrev),
+              tags$div(class = "mp-pitcher-chip", style = sprintf("border-left:4px solid %s;", col_b),
+                       mp_logo_tag(tb$abbrev, "sm"),
+                       tags$div(
+                         tags$div(class = "mp-chip-text-main", res$sb$player[1]),
+                         tags$div(class = "mp-chip-text-sub",
+                                  sprintf("Pitching run value: %+.2f rpg  ·  %d PA",
+                                          res$sb_rpg, res$sb$pa_rv[1]))
+                       )
               )
             )
           )
         )
       ),
-
+      
       # Most likely final scores.
       card(
         card_header("Most Likely Final Scores"),
@@ -3421,7 +4214,7 @@ server <- function(input, output, session) {
       )
     )
   })
-
+  
   # Score probability heatmap.
   output$mp_heatmap <- renderPlotly({
     res <- mp_result()
@@ -3441,16 +4234,16 @@ server <- function(input, output, session) {
           config(displayModeBar = FALSE)
       )
     }
-
+    
     ta <- res$ta; tb <- res$tb
     runs_seq  <- res$runs_seq
     score_mat <- res$score_mat
-
+    
     # Zero out the diagonal — tied final scores are impossible in baseball;
     # that probability has already been redistributed to extra-innings outcomes.
     score_mat_plot <- score_mat
     diag(score_mat_plot) <- 0
-
+    
     plot_ly(
       x = runs_seq,
       y = runs_seq,
@@ -3498,21 +4291,21 @@ server <- function(input, output, session) {
       ) %>%
       config(displayModeBar = FALSE)
   })
-
+  
   # ============================================================================
   # Matchup Simulator — "Your Simulation" random draw
   # ============================================================================
-
+  
   # Increments when the Re-roll button is clicked; mp_sim also re-runs when
   # mp_result() itself changes (new matchup), so no need to reset manually.
   sim_trigger <- reactiveVal(0L)
   observeEvent(input$mp_reroll, sim_trigger(sim_trigger() + 1L), ignoreInit = TRUE)
-
+  
   mp_sim <- reactive({
     res <- mp_result()   # re-run when matchup changes
     sim_trigger()        # also re-run on re-roll
     if (is.null(res)) return(NULL)
-
+    
     # Add log-normal noise to the expected run totals (22% std-dev on log scale).
     # Mean correction -σ²/2 keeps E[exp(noise)] = 1 so the draw is unbiased.
     noise_scale <- 0.22
@@ -3520,10 +4313,10 @@ server <- function(input, output, session) {
     lambda_b <- res$exp_b * exp(rnorm(1, -noise_scale^2 / 2, noise_scale))
     lambda_a <- max(lambda_a, 0.1)
     lambda_b <- max(lambda_b, 0.1)
-
+    
     sim_a <- as.integer(rnbinom(1, mu = lambda_a, size = DISP_SIZE))
     sim_b <- as.integer(rnbinom(1, mu = lambda_b, size = DISP_SIZE))
-
+    
     # No ties in baseball — resolve via proportional extra-innings coin flip.
     if (sim_a == sim_b) {
       if (runif(1) < res$exp_a / (res$exp_a + res$exp_b))
@@ -3531,7 +4324,7 @@ server <- function(input, output, session) {
       else
         sim_b <- sim_b + 1L
     }
-
+    
     # Look up base probability from the unperturbed score matrix.
     runs_seq <- res$runs_seq
     max_idx  <- max(runs_seq)
@@ -3539,24 +4332,29 @@ server <- function(input, output, session) {
       res$score_mat[sim_a + 1L, sim_b + 1L] * 100
     else
       NA_real_
-
+    
     list(sim_a = sim_a, sim_b = sim_b, sim_prob = sim_prob)
   })
-
+  
   output$mp_sim_card <- renderUI({
     res <- mp_result()
     if (is.null(res)) return(NULL)
     sim <- mp_sim()
     if (is.null(sim)) return(NULL)
-
+    
     ta <- res$ta; tb <- res$tb
+    col_a <- mp_team_color(ta)
+    col_b <- mp_team_color(tb, "#334155")
+    txt_a <- contrast_text(col_a)
+    txt_b <- contrast_text(col_b)
     winner_name <- if (sim$sim_a > sim$sim_b) ta$team_name else tb$team_name
-    badge_col   <- if (sim$sim_a > sim$sim_b) "#1a365d" else "#b91c1c"
+    badge_col   <- if (sim$sim_a > sim$sim_b) col_a else col_b
+    badge_txt   <- if (sim$sim_a > sim$sim_b) txt_a else txt_b
     prob_txt    <- if (!is.na(sim$sim_prob))
       sprintf("Base probability: %.2f%%", sim$sim_prob)
     else
       "Low-probability outcome"
-
+    
     tags$div(
       style = "padding:0 20px 14px 20px;",
       card(
@@ -3577,38 +4375,38 @@ server <- function(input, output, session) {
         ),
         card_body(
           tags$div(class = "mp-sim-score-block",
-            tags$div(class = "mp-sim-team",
-              mp_logo_tag(ta$abbrev, "lg"),
-              tags$div(class = "mp-sim-score", sim$sim_a)
-            ),
-            tags$div(class = "mp-sim-dash", "\u2014"),
-            tags$div(class = "mp-sim-team",
-              mp_logo_tag(tb$abbrev, "lg"),
-              tags$div(class = "mp-sim-score", sim$sim_b)
-            )
+                   tags$div(class = "mp-sim-team",
+                            mp_logo_tag(ta$abbrev, "lg"),
+                            tags$div(class = "mp-sim-score", style = sprintf("color:%s;", col_a), sim$sim_a)
+                   ),
+                   tags$div(class = "mp-sim-dash", "\u2014"),
+                   tags$div(class = "mp-sim-team",
+                            mp_logo_tag(tb$abbrev, "lg"),
+                            tags$div(class = "mp-sim-score", style = sprintf("color:%s;", col_b), sim$sim_b)
+                   )
           ),
           tags$div(
             style = "display:flex; align-items:center; justify-content:center;
                      gap:10px; margin-top:6px; flex-wrap:wrap;",
             tags$span(
               style = sprintf(
-                "font-size:12px; font-weight:700; color:#fff; background:%s;
+                "font-size:12px; font-weight:700; color:%s; background:%s;
                  border-radius:4px; padding:3px 12px;",
-                badge_col
+                badge_txt, badge_col
               ),
               paste(winner_name, "Win")
             ),
             tags$span(class = "mp-sim-prob", style = "font-size:12px; color:#64748b;",
-              prob_txt)
+                      prob_txt)
           ),
           tags$div(class = "mp-sim-note",
-            "Sampled from the score probability model with added game-to-game variance. Re-roll for a new draw."
+                   "Sampled from the score probability model with added game-to-game variance. Re-roll for a new draw."
           )
         )
       )
     )
   })
-
+  
 }
 
 shinyApp(ui, server)
