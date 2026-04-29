@@ -1614,6 +1614,58 @@ for (yc in names(team_tbl_by_year)) {
 }
 
 # =============================================================================
+# Player Profile — pre-computation
+# =============================================================================
+# Build a long-form history table: one row per player-year, with their Overall
+# rating for that year. Used for the year-over-year trend chart.
+# Also pre-compute all_players_by_role for percentile calculations.
+{
+  pp_history <- dplyr::bind_rows(lapply(names(players_view_by_year), function(yc) {
+    pv <- players_view_by_year[[yc]]
+    if (is.null(pv)) return(NULL)
+    pv %>%
+      dplyr::select(player_id, Player, Team, Role, PA, Overall,
+                    Hitting, Baserunning, Pitching, Fielding) %>%
+      dplyr::mutate(year = as.integer(yc))
+  }))
+
+  # For percentile lookups: all hitters and pitchers pooled across the most
+  # recent player-mode year only (current-season leaderboard context).
+  pp_current_yr <- as.character(most_recent_player_yr)
+  pp_current_pv <- players_view_by_year[[pp_current_yr]]
+
+  if (!is.null(pp_current_pv)) {
+    pp_hitter_overalls  <- pp_current_pv %>%
+      dplyr::filter(Role %in% c("Hitter", "Player")) %>%
+      dplyr::pull(Overall)
+    pp_pitcher_overalls <- pp_current_pv %>%
+      dplyr::filter(Role %in% c("Pitcher", "Player")) %>%
+      dplyr::pull(Overall)
+    pp_hitter_hitting   <- pp_current_pv %>%
+      dplyr::filter(!is.na(Hitting)) %>% dplyr::pull(Hitting)
+    pp_pitcher_pitching <- pp_current_pv %>%
+      dplyr::filter(!is.na(Pitching)) %>% dplyr::pull(Pitching)
+    pp_hitter_br        <- pp_current_pv %>%
+      dplyr::filter(!is.na(Baserunning)) %>% dplyr::pull(Baserunning)
+    pp_fielding_all     <- pp_current_pv %>%
+      dplyr::filter(!is.na(Fielding)) %>% dplyr::pull(Fielding)
+  } else {
+    pp_hitter_overalls  <- numeric(0)
+    pp_pitcher_overalls <- numeric(0)
+    pp_hitter_hitting   <- numeric(0)
+    pp_pitcher_pitching <- numeric(0)
+    pp_hitter_br        <- numeric(0)
+    pp_fielding_all     <- numeric(0)
+  }
+
+  # Helper: percentile rank of x within pool (0–100, higher = better)
+  pct_rank <- function(x, pool) {
+    if (is.na(x) || length(pool) == 0) return(NA_real_)
+    round(mean(pool <= x) * 100)
+  }
+}
+
+# =============================================================================
 # Matchup Simulator — pre-computation
 # =============================================================================
 # Recency-weighted pitcher ratings from ALL player-mode years only.
@@ -1743,6 +1795,379 @@ app_theme <- bs_theme(
 custom_css <- HTML("
   /* ---- Base & typography ---- */
   body { background: #f8fafc; color: #1e293b; }
+
+  /* ---- Player Profile — search bar ---- */
+  .xruns-pp-search-wrap {
+    padding: 18px 0 28px 0;
+    /* Reserve enough space so the dropdown doesn't overlap the header below */
+    min-height: 52px;
+  }
+  .xruns-pp-search-inner {
+    position: relative;
+    max-width: 460px;
+    z-index: 100;
+  }
+  .xruns-pp-search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b8;
+    font-size: 14px;
+    pointer-events: none;
+  }
+  .xruns-pp-search-input {
+    width: 100%;
+    padding: 9px 12px 9px 36px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 14px;
+    color: #1e293b;
+    background: #ffffff;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+  .xruns-pp-search-input:focus {
+    border-color: #1a365d;
+  }
+  .xruns-pp-search-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+    z-index: 9999;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .xruns-pp-search-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #f8fafc;
+    font-size: 13.5px;
+    color: #1e293b;
+  }
+  .xruns-pp-search-item:last-child { border-bottom: none; }
+  .xruns-pp-search-item:hover { background: #f1f5f9; }
+  .xruns-pp-search-item img { height: 18px; flex-shrink: 0; }
+  .xruns-pp-search-item-name { font-weight: 600; flex: 1; }
+  .xruns-pp-search-item-meta { font-size: 11.5px; color: #94a3b8; }
+  .xruns-pp-search-none {
+    padding: 12px 14px;
+    font-size: 13px;
+    color: #94a3b8;
+  }
+
+  /* ---- Player Profile tab ---- */
+  .xruns-pp-header {
+    background: #1a365d;
+    margin: -1rem -1rem 0 -1rem;
+    padding: 22px 28px 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  /* Headshot container: clips img, shows initials if img fails */
+  .xruns-pp-avatar-wrap {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    overflow: hidden;
+    border: 2px solid rgba(255,255,255,0.25);
+    background: #2d4a7a;
+  }
+  .xruns-pp-headshot {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+  .xruns-pp-initials {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.75);
+    letter-spacing: -0.02em;
+  }
+  .xruns-pp-name {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+  .xruns-pp-meta {
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.65);
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .xruns-pp-meta img {
+    height: 18px;
+    vertical-align: middle;
+  }
+  .xruns-pp-meta-dot { opacity: 0.4; }
+  .xruns-pp-pill {
+    display: inline-block;
+    background: rgba(255,255,255,0.13);
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 11px;
+    color: rgba(255,255,255,0.8);
+    margin-top: 8px;
+  }
+  .xruns-pp-overall {
+    margin-left: auto;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .xruns-pp-overall-val {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+  .xruns-pp-overall-val.pos { color: #68d391; }
+  .xruns-pp-overall-val.neg { color: #fc8181; }
+  .xruns-pp-overall-val.neu { color: rgba(255,255,255,0.6); }
+  .xruns-pp-overall-label {
+    font-size: 10.5px;
+    color: rgba(255,255,255,0.45);
+    margin-top: 3px;
+  }
+  /* (back button removed — player profile is now a standalone page) */
+
+  /* ---- Mobile / narrow-screen responsive overrides ---- */
+
+  /* Player profile header: stack vertically below 600px */
+  @media (max-width: 600px) {
+    .xruns-pp-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 18px 18px 20px;
+    }
+    .xruns-pp-overall {
+      margin-left: 0;
+      text-align: left;
+    }
+    .xruns-pp-name { font-size: 1.2rem; }
+    .xruns-pp-overall-val { font-size: 1.5rem; }
+    .xruns-pp-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Team breakdown header pills: wrap tightly on narrow screens */
+  @media (max-width: 640px) {
+    .xruns-page { padding-left: 12px !important; padding-right: 12px !important; }
+    .xruns-pp-search-inner { max-width: 100%; }
+  }
+
+  /* DT responsive: style the child-row expand button and detail rows */
+  table.dataTable td.dtr-control {
+    padding-left: 10px !important;
+  }
+  table.dataTable td.dtr-control::before {
+    background-color: transparent !important;
+    border: 1.5px solid #94a3b8 !important;
+    box-shadow: none !important;
+    width: 14px !important;
+    height: 14px !important;
+    margin-top: -7px !important;
+    border-radius: 3px !important;
+    font-size: 14px !important;
+    line-height: 13px !important;
+    color: #94a3b8 !important;
+    content: \"+\" !important;
+  }
+  table.dataTable tr.parent td.dtr-control::before {
+    content: \"-\" !important;
+    border-color: #1a365d !important;
+    color: #1a365d !important;
+  }
+  table.dataTable tr.child td.dtr-details {
+    font-size: 12.5px;
+    padding: 6px 8px;
+  }
+  /* Tighten table padding on small screens */
+  @media (max-width: 640px) {
+    table.dataTable tbody td {
+      padding-top: 8px !important;
+      padding-bottom: 8px !important;
+      font-size: 12.5px !important;
+    }
+    table.dataTable thead th { font-size: 0.62rem !important; }
+    .tab-body { padding: 10px 8px 16px !important; }
+  }
+  /* Section grid */
+  .xruns-pp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 14px;
+  }
+  .xruns-pp-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .xruns-pp-card-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #94a3b8;
+    margin-bottom: 12px;
+  }
+  /* Percentile bars */
+  .xruns-pp-pct-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .xruns-pp-pct-row:last-child { border-bottom: none; }
+  .xruns-pp-pct-label {
+    font-size: 12px;
+    color: #475569;
+    width: 96px;
+    flex-shrink: 0;
+  }
+  .xruns-pp-pct-track {
+    flex: 1;
+    height: 6px;
+    background: #f1f5f9;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .xruns-pp-pct-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: #047857;
+  }
+  .xruns-pp-pct-fill.neg-fill { background: #b91c1c; }
+  .xruns-pp-pct-num {
+    font-size: 11.5px;
+    font-weight: 700;
+    width: 34px;
+    text-align: right;
+    flex-shrink: 0;
+    color: #047857;
+  }
+  .xruns-pp-pct-num.neg-pct { color: #b91c1c; }
+  /* Composition — diverging bar rows */
+  .xruns-pp-comp-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 12.5px;
+  }
+  .xruns-pp-comp-row:last-child { border-bottom: none; }
+  .xruns-pp-comp-label {
+    width: 90px;
+    flex-shrink: 0;
+    color: #64748b;
+    font-size: 12px;
+  }
+  /* The two halves of the diverging track */
+  .xruns-pp-comp-neg-half {
+    flex: 1;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .xruns-pp-comp-pos-half {
+    flex: 1;
+    display: flex;
+    justify-content: flex-start;
+  }
+  .xruns-pp-comp-bar {
+    height: 8px;
+    border-radius: 2px;
+    min-width: 2px;
+  }
+  .xruns-pp-comp-bar.pos { background: #047857; }
+  .xruns-pp-comp-bar.neg { background: #b91c1c; }
+  .xruns-pp-comp-val {
+    width: 42px;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .xruns-pp-comp-val.pos { color: #047857; }
+  .xruns-pp-comp-val.neg { color: #b91c1c; }
+  .xruns-pp-comp-val.neu { color: #94a3b8; font-weight: 400; }
+  /* Centre tick (zero line) */
+  .xruns-pp-comp-zero {
+    width: 1px;
+    background: #cbd5e1;
+    align-self: stretch;
+    flex-shrink: 0;
+  }
+  .xruns-pp-stat-val-pos { color: #047857; font-weight: 600; }
+  .xruns-pp-stat-val-neg { color: #b91c1c; font-weight: 600; }
+  .xruns-pp-stat-val-neu { color: #94a3b8; }
+  /* Underlying stats */
+  .xruns-pp-underlying-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .xruns-pp-underlying-item {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 9px 11px;
+  }
+  .xruns-pp-underlying-raw {
+    font-size: 10.5px;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+  }
+  .xruns-pp-underlying-val {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1e293b;
+  }
+  .xruns-pp-underlying-arrow {
+    font-size: 10px;
+    color: #cbd5e1;
+    margin: 3px 0;
+  }
+  .xruns-pp-underlying-xruns {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .xruns-pp-footer-note {
+    font-size: 11px;
+    color: #94a3b8;
+    margin-top: 10px;
+    line-height: 1.5;
+  }
 
   .navbar {
     background: #ffffff !important;
@@ -2070,12 +2495,12 @@ custom_css <- HTML("
     min-width: 28px;
   }
 
-  /* ---- Desktop (≥768px) ---- */
+  /* ---- Desktop (768px+) ---- */
   @media (min-width: 768px) {
     .kpi-row { flex-wrap: nowrap; overflow-x: visible; }
   }
 
-  /* ---- Mobile (≤640px): stack matchup cards vertically ---- */
+  /* ---- Mobile (max 640px): stack matchup cards vertically ---- */
   @media (max-width: 640px) {
     .mp-selectors-row {
       flex-direction: column;   /* stack A, VS, B top-to-bottom */
@@ -2117,7 +2542,7 @@ custom_css <- HTML("
     }
   }
 
-  /* ---- Small mobile (≤576px) ---- */
+  /* ---- Small mobile (max 576px) ---- */
   @media (max-width: 576px) {
     .xruns-heading-row { padding: 10px 14px 4px 14px; gap: 8px; }
     .xruns-heading-text { font-size: 1.0rem; }
@@ -3238,13 +3663,57 @@ ui <- page_navbar(
             "Dashes (—) appear where a stat is not applicable — hitters have no Pitching rating; ",
             "pitchers have no Hitting or Baserunning rating."
           )
-        ),
+        )
       ),
       heading_with_filter_picker("players", "players_heading"),
       tags$div(class = "tab-body", DTOutput("players_table"))
     )
   ),
   
+  # ---- Tab: Player Profile ----
+  nav_panel(
+    title = "Player Profile",
+    value = "Player Profile",
+    tags$main(
+      class = "xruns-page",
+      style = "padding: 0 20px 32px;",
+
+      # ---- Search bar row ----
+      tags$div(
+        class = "xruns-pp-search-wrap",
+        tags$div(
+          class = "xruns-pp-search-inner",
+          tags$i(class = "fa-solid fa-magnifying-glass xruns-pp-search-icon"),
+          tags$input(
+            id          = "pp_player_search",
+            type        = "text",
+            class       = "xruns-pp-search-input",
+            placeholder = "Search for a player…",
+            autocomplete = "off"
+          ),
+          # Dropdown results (populated server-side via uiOutput)
+          uiOutput("pp_search_results")
+        )
+      ),
+
+      # Header card + player content (hidden until a player is selected)
+      uiOutput("pp_header"),
+
+      # Two-column grid: percentiles LEFT, composition RIGHT
+      tags$div(
+        class = "xruns-pp-grid",
+        uiOutput("pp_percentiles"),
+        uiOutput("pp_composition")
+      ),
+
+      # Year-over-year trend (full width)
+      tags$div(
+        style = "margin-top: 14px;",
+        uiOutput("pp_trend_wrap")
+      )
+    )
+  ),
+
   # ---- Tab: Methodology ----
   nav_panel(
     title = "Methodology",
@@ -3418,6 +3887,433 @@ server <- function(input, output, session) {
     updateSelectInput(session, "tb_team", selected = abbrev_clicked)
     nav_select("main_nav", "Team Breakdown")
   })
+
+  # ---- Selected player ID (reactive value, persists across renders) ----
+  selected_player_id <- reactiveVal(NULL)
+
+  # ---- Player table row click → navigate to Player Profile tab ----
+  observeEvent(input$player_table_row_clicked, {
+    pid <- as.integer(input$player_table_row_clicked)
+    if (is.null(pid) || is.na(pid)) return()
+    selected_player_id(pid)
+    nav_select("main_nav", "Player Profile")
+  })
+
+  # ---- Player search: build a lookup table of all players across all years ----
+  # We want the most recent year's data as the primary row but include all names.
+  pp_all_players <- dplyr::bind_rows(lapply(
+    rev(names(players_view_by_year)),   # most recent first
+    function(yc) {
+      pv <- players_view_by_year[[yc]]
+      if (is.null(pv)) return(NULL)
+      pv %>%
+        dplyr::filter(Role != "Player") %>%   # use base roles for search
+        dplyr::select(player_id, Player, Team, Role) %>%
+        dplyr::distinct(player_id, Role, .keep_all = TRUE)
+    }
+  )) %>%
+    dplyr::distinct(player_id, Role, .keep_all = TRUE) %>%
+    dplyr::left_join(
+      TEAM_META %>% dplyr::select(abbrev, team_logo_espn),
+      by = c("Team" = "abbrev")
+    )
+
+  # ---- Search dropdown results ----
+  output$pp_search_results <- renderUI({
+    query <- input$pp_player_search
+    if (is.null(query) || nchar(trimws(query)) < 2) return(NULL)
+
+    query_clean <- trimws(query)
+    matches <- pp_all_players %>%
+      dplyr::filter(grepl(query_clean, Player, ignore.case = TRUE)) %>%
+      dplyr::arrange(Player) %>%
+      dplyr::slice_head(n = 10)
+
+    if (nrow(matches) == 0) {
+      return(tags$div(
+        class = "xruns-pp-search-dropdown",
+        tags$div(class = "xruns-pp-search-none", "No players found.")
+      ))
+    }
+
+    items <- lapply(seq_len(nrow(matches)), function(i) {
+      m        <- matches[i, ]
+      logo_url <- if (!is.na(m$team_logo_espn)) m$team_logo_espn else NULL
+      tags$div(
+        class   = "xruns-pp-search-item",
+        onclick = sprintf(
+          "Shiny.setInputValue('pp_search_select', %d, {priority:'event'}); document.getElementById('pp_player_search').value = '%s'; this.closest('.xruns-pp-search-dropdown').style.display='none';",
+          m$player_id, gsub("'", "\\\\'", m$Player)
+        ),
+        if (!is.null(logo_url))
+          tags$img(src = logo_url, alt = m$Team),
+        tags$span(class = "xruns-pp-search-item-name", m$Player),
+        tags$span(class = "xruns-pp-search-item-meta",
+                  paste0(m$Team, " · ", m$Role))
+      )
+    })
+
+    tags$div(class = "xruns-pp-search-dropdown", tagList(items))
+  })
+
+  # ---- Search item selected ----
+  observeEvent(input$pp_search_select, {
+    pid <- as.integer(input$pp_search_select)
+    if (is.null(pid) || is.na(pid)) return()
+    selected_player_id(pid)
+  })
+
+  # ---- Reactive: current player data row ----
+  current_player_row <- reactive({
+    pid <- selected_player_id()
+    if (is.null(pid)) return(NULL)
+    pv  <- current_players_view()
+    if (is.null(pv)) return(NULL)
+    # Prefer the merged "Player" row for two-way players
+    pv %>%
+      dplyr::filter(player_id == pid) %>%
+      dplyr::arrange(dplyr::case_when(Role == "Player" ~ 0L, TRUE ~ 1L)) %>%
+      dplyr::slice(1)
+  })
+
+  # ---- Helper: initials from a name ----
+  make_initials <- function(name) {
+    parts <- strsplit(trimws(name), "\\s+")[[1]]
+    if (length(parts) >= 2) {
+      paste0(substr(parts[1], 1, 1), substr(parts[length(parts)], 1, 1))
+    } else {
+      substr(name, 1, 2)
+    }
+  }
+
+  # ---- Helper: signed value string ----
+  signed_str <- function(v, digits = 2) {
+    fmt <- paste0("%+.", digits, "f")
+    sprintf(fmt, v)
+  }
+
+  # ---- Helper: CSS class for a run value ----
+  val_cls <- function(v) {
+    if (is.na(v)) return("xruns-pp-stat-val-neu")
+    if (v > 0.01) "xruns-pp-stat-val-pos" else if (v < -0.01) "xruns-pp-stat-val-neg" else "xruns-pp-stat-val-neu"
+  }
+
+  # ---- pp_header ----
+  output$pp_header <- renderUI({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) {
+      return(tags$div(
+        style = "padding: 48px 0 16px; color: #94a3b8; font-size: 14px; text-align: center;",
+        tags$div(style = "font-size: 2rem; margin-bottom: 10px; opacity: 0.3;", "⚾"),
+        tags$div("Search for a player above, or click any name in Player Rankings.")
+      ))
+    }
+
+    pid         <- row$player_id
+    player_name <- row$Player
+    team_abbrev <- row$Team
+    role        <- row$Role
+    pa          <- row$PA
+    overall     <- row$Overall
+    xwoba       <- row$xwOBA
+
+    role_display <- switch(role,
+      "Player"  = "Two-Way Player",
+      "Hitter"  = "Hitter",
+      "Pitcher" = "Pitcher",
+      role
+    )
+
+    overall_cls  <- if (overall > 0.01) "pos" else if (overall < -0.01) "neg" else "neu"
+    overall_sign <- signed_str(overall)
+
+    # Overall percentile pill text (role-appropriate)
+    pct_text <- if (role %in% c("Hitter", "Player") && length(pp_hitter_overalls) > 0) {
+      h_pct <- pct_rank(overall, pp_hitter_overalls)
+      if (!is.na(h_pct)) sprintf("%dth percentile among hitters", h_pct) else NULL
+    } else if (role == "Pitcher" && length(pp_pitcher_overalls) > 0) {
+      p_pct <- pct_rank(overall, pp_pitcher_overalls)
+      if (!is.na(p_pct)) sprintf("%dth percentile among pitchers", p_pct) else NULL
+    } else NULL
+
+    # Team logo
+    team_logo_url <- TEAM_META %>%
+      dplyr::filter(abbrev == team_abbrev) %>%
+      dplyr::pull(team_logo_espn)
+    team_logo_url <- if (length(team_logo_url) == 1 && !is.na(team_logo_url))
+      team_logo_url else NULL
+
+    # Headshot: MLB Cloudinary CDN. The d_people:generic fallback param means
+    # the CDN itself serves a silhouette if the player has no photo — no JS needed.
+    headshot_url <- sprintf(
+      "https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_180,q_auto:best/v1/people/%d/headshot/67/current",
+      pid
+    )
+
+    tags$div(
+      class = "xruns-pp-header",
+      # Avatar: Cloudinary handles missing photos server-side with its fallback param
+      tags$div(
+        class = "xruns-pp-avatar-wrap",
+        tags$img(
+          src   = headshot_url,
+          class = "xruns-pp-headshot",
+          alt   = player_name
+        )
+      ),
+      # Name / meta
+      tags$div(
+        tags$div(class = "xruns-pp-name", player_name),
+        tags$div(
+          class = "xruns-pp-meta",
+          if (!is.null(team_logo_url))
+            tags$img(src = team_logo_url, alt = team_abbrev),
+          tags$span(team_abbrev),
+          tags$span(class = "xruns-pp-meta-dot", "·"),
+          tags$span(role_display),
+          tags$span(class = "xruns-pp-meta-dot", "·"),
+          tags$span(pa, " PA"),
+          if (!is.na(xwoba))
+            tagList(
+              tags$span(class = "xruns-pp-meta-dot", "·"),
+              tags$span(sprintf("%.3f xwOBA", xwoba))
+            )
+        ),
+        if (!is.null(pct_text))
+          tags$div(tags$span(class = "xruns-pp-pill", pct_text))
+      ),
+      # Overall rating
+      tags$div(
+        class = "xruns-pp-overall",
+        tags$div(class = paste("xruns-pp-overall-val", overall_cls), overall_sign),
+        tags$div(class = "xruns-pp-overall-label", "Overall · runs/9 vs avg")
+      )
+    )
+  })
+
+  # ---- pp_percentiles (LEFT card) ----
+  output$pp_percentiles <- renderUI({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+
+    role        <- row$Role
+    overall     <- row$Overall
+    hitting     <- row$Hitting
+    baserunning <- row$Baserunning
+    pitching    <- row$Pitching
+    fielding    <- row$Fielding
+
+    is_hitter  <- role %in% c("Hitter", "Player")
+    is_pitcher <- role %in% c("Pitcher", "Player")
+
+    make_pct_row <- function(label, val, pool) {
+      p <- pct_rank(val, pool)
+      if (is.na(p)) return(NULL)
+      is_neg  <- p < 40
+      fill_pct <- p
+      tags$div(
+        class = "xruns-pp-pct-row",
+        tags$span(class = "xruns-pp-pct-label", label),
+        tags$div(
+          class = "xruns-pp-pct-track",
+          tags$div(
+            class = if (is_neg) "xruns-pp-pct-fill neg-fill" else "xruns-pp-pct-fill",
+            style = sprintf("width: %d%%;", fill_pct)
+          )
+        ),
+        tags$span(
+          class = if (is_neg) "xruns-pp-pct-num neg-pct" else "xruns-pp-pct-num",
+          sprintf("%dth", p)
+        )
+      )
+    }
+
+    rows <- list()
+
+    if (is_hitter && is_pitcher) {
+      # Two-way: show hitter pool for hitting-side, pitcher pool for pitching-side
+      rows[["h_overall"]] <- make_pct_row("Overall (hit)", overall, pp_hitter_overalls)
+      rows[["p_overall"]] <- make_pct_row("Overall (pit)", overall, pp_pitcher_overalls)
+      rows[["hitting"]]   <- make_pct_row("Hitting", hitting, pp_hitter_hitting)
+      rows[["pitching"]]  <- make_pct_row("Pitching", pitching, pp_pitcher_pitching)
+      rows[["br"]]        <- make_pct_row("Baserunning", baserunning, pp_hitter_br)
+      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+    } else if (is_hitter) {
+      rows[["overall"]]   <- make_pct_row("Overall", overall, pp_hitter_overalls)
+      rows[["hitting"]]   <- make_pct_row("Hitting", hitting, pp_hitter_hitting)
+      rows[["br"]]        <- make_pct_row("Baserunning", baserunning, pp_hitter_br)
+      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+    } else {
+      rows[["overall"]]   <- make_pct_row("Overall", overall, pp_pitcher_overalls)
+      rows[["pitching"]]  <- make_pct_row("Pitching", pitching, pp_pitcher_pitching)
+      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+    }
+
+    pool_note <- if (is_hitter && is_pitcher) {
+      "Percentiles vs. all hitters / pitchers in current season."
+    } else if (is_hitter) {
+      "Percentiles vs. all hitters in current season."
+    } else {
+      "Percentiles vs. all pitchers in current season."
+    }
+
+    tags$div(
+      class = "xruns-pp-card",
+      tags$div(class = "xruns-pp-card-label", "League percentiles"),
+      tagList(Filter(Negate(is.null), rows)),
+      tags$div(
+        style = "font-size:10.5px; color:#94a3b8; margin-top:8px;",
+        pool_note
+      )
+    )
+  })
+
+  # ---- pp_composition (RIGHT card) — diverging bars ----
+  output$pp_composition <- renderUI({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+
+    components <- list(
+      list(label = "Hitting",     val = row$Hitting),
+      list(label = "Baserunning", val = row$Baserunning),
+      list(label = "Pitching",    val = row$Pitching),
+      list(label = "Fielding",    val = row$Fielding)
+    )
+    components <- Filter(function(x) !is.na(x$val), components)
+    if (length(components) == 0) return(NULL)
+
+    # Scale bars relative to the largest absolute value among components
+    max_abs <- max(sapply(components, function(x) abs(x$val)), na.rm = TRUE)
+    if (max_abs == 0) max_abs <- 1
+
+    comp_rows <- lapply(components, function(x) {
+      v      <- x$val
+      pct    <- min(abs(v) / max_abs * 100, 100)
+      is_pos <- v > 0.01
+      is_neg <- v < -0.01
+      val_cls_str <- if (is_pos) "pos" else if (is_neg) "neg" else "neu"
+      sign_s <- signed_str(v)
+
+      tags$div(
+        class = "xruns-pp-comp-row",
+        # Label
+        tags$span(class = "xruns-pp-comp-label", x$label),
+        # Negative half (bar grows rightward from centre for negative values)
+        tags$div(
+          class = "xruns-pp-comp-neg-half",
+          if (is_neg)
+            tags$div(class = "xruns-pp-comp-bar neg",
+                     style = sprintf("width:%.1f%%;", pct))
+          else
+            tags$div(style = "width:0;")
+        ),
+        # Centre zero tick
+        tags$div(class = "xruns-pp-comp-zero"),
+        # Positive half
+        tags$div(
+          class = "xruns-pp-comp-pos-half",
+          if (is_pos)
+            tags$div(class = "xruns-pp-comp-bar pos",
+                     style = sprintf("width:%.1f%%;", pct))
+          else
+            tags$div(style = "width:0;")
+        ),
+        # Value label
+        tags$span(class = paste("xruns-pp-comp-val", val_cls_str), sign_s)
+      )
+    })
+
+    tags$div(
+      class = "xruns-pp-card",
+      tags$div(class = "xruns-pp-card-label", "Component breakdown"),
+      tagList(comp_rows),
+      tags$div(
+        style = "font-size:10.5px; color:#94a3b8; margin-top:8px;",
+        "Bars show each component's contribution relative to the largest. Runs above avg per 9 inn."
+      )
+    )
+  })
+
+  # ---- pp_trend_wrap (full-width trend chart) ----
+  output$pp_trend_wrap <- renderUI({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+    tags$div(
+      class = "xruns-pp-card",
+      tags$div(class = "xruns-pp-card-label", "Year-over-year overall rating"),
+      plotlyOutput("pp_trend_chart", height = "180px")
+    )
+  })
+
+  output$pp_trend_chart <- renderPlotly({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+    pid <- row$player_id
+
+    hist <- pp_history %>%
+      dplyr::filter(player_id == pid) %>%
+      # For two-way players prefer the "Player" row; else take whichever role exists
+      dplyr::arrange(year, dplyr::case_when(Role == "Player" ~ 0L, TRUE ~ 1L)) %>%
+      dplyr::distinct(year, .keep_all = TRUE) %>%
+      dplyr::arrange(year)
+
+    if (nrow(hist) == 0) return(NULL)
+
+    hover_txt <- paste0(
+      "<b>", hist$year, "</b><br>",
+      "Overall: ", sprintf("%+.2f", hist$Overall), " runs/9<br>",
+      hist$Team, " · ", hist$PA, " PA"
+    )
+
+    # Zero reference line — draw first so it sits behind the data line
+    x_pad <- if (nrow(hist) > 1) 0.3 else 0.5
+
+    plot_ly() %>%
+      # Dotted zero line
+      add_segments(
+        x = min(hist$year) - x_pad, xend = max(hist$year) + x_pad,
+        y = 0, yend = 0,
+        line = list(color = "#cbd5e1", width = 1, dash = "dot"),
+        showlegend = FALSE, hoverinfo = "none"
+      ) %>%
+      # Data line — clean navy, no markers
+      add_trace(
+        x         = hist$year,
+        y         = hist$Overall,
+        type      = "scatter",
+        mode      = "lines",
+        line      = list(color = "#1a365d", width = 2.5),
+        text      = hover_txt,
+        hoverinfo = "text"
+      ) %>%
+      layout(
+        xaxis = list(
+          title      = "",
+          tickformat = "d",
+          tickvals   = hist$year,
+          zeroline   = FALSE,
+          showgrid   = FALSE,
+          color      = "#94a3b8"
+        ),
+        yaxis = list(
+          title    = "Runs / 9 inn vs avg",
+          zeroline = FALSE,
+          showgrid = TRUE,
+          gridcolor = "#f1f5f9",
+          color    = "#94a3b8",
+          tickfont = list(size = 11)
+        ),
+        paper_bgcolor = "rgba(0,0,0,0)",
+        plot_bgcolor  = "rgba(0,0,0,0)",
+        margin        = list(t = 8, r = 16, b = 32, l = 52),
+        font          = list(family = "Inter", size = 11, color = "#94a3b8"),
+        showlegend    = FALSE,
+        hoverlabel    = list(bgcolor = "#1a365d", font = list(color = "#fff", size = 12))
+      ) %>%
+      config(displayModeBar = FALSE)
+  })
+
+  # (pp_underlying removed — replaced by cleaner component breakdown card)
   
   # ---- Time period chip toggle (only for years with snapshot history) --------
   # Rendered as plain text chips — quiet by default, minimal visual footprint.
@@ -3606,7 +4502,7 @@ server <- function(input, output, session) {
         Rank     = rank,
         ` `,
         Team     = team_name,
-        Overall  = round(overall, 4),
+        Overall  = round(overall, 4),   # col 3 — always visible
         Offense,
         Pitching,
         Fielding,
@@ -3621,12 +4517,17 @@ server <- function(input, output, session) {
     #   0 Rank  1 Logo  2 Team  3 Overall  4 Offense  5 Pitching  6 Fielding
     #   7 off_sort (hidden)  8 pit_sort (hidden)  9 fld_sort (hidden)
     #   10 abbrev_ (hidden)
+    #
+    # Responsive priority (lower = hides last / stays visible longest):
+    #   Rank=1, Logo=2, Team=1, Overall=1 → always visible
+    #   Offense=3, Pitching=4, Fielding=5 → collapse first on narrow screens
     centered_cols  <- c(0, 3, 4, 5, 6)
 
     row_click_js <- JS(
       "function(row, data, index) {",
       "  $(row).css('cursor', 'pointer');",
-      "  $(row).on('click', function() {",
+      "  $(row).on('click', function(e) {",
+      "    if ($(e.target).closest('td.dtr-control').length > 0) return;",
       "    Shiny.setInputValue('team_table_row_clicked', data[10], {priority: 'event'});",
       "  });",
       "}"
@@ -3634,16 +4535,17 @@ server <- function(input, output, session) {
 
     datatable(
       dt,
-      rownames = FALSE,
-      escape   = FALSE,
-      class    = "compact stripe hover",
-      options  = list(
+      rownames    = FALSE,
+      escape      = FALSE,
+      class       = "compact stripe hover",
+      extensions  = "Responsive",
+      options     = list(
         pageLength = 30,
         dom        = "t",
+        responsive = TRUE,
         # Default sort: Overall descending (column index 3)
         order      = list(list(3, "desc")),
         autoWidth  = FALSE,
-        scrollX    = TRUE,
         rowCallback = row_click_js,
         columnDefs = list(
           list(targets = 3,             render = signed_render),
@@ -3659,7 +4561,14 @@ server <- function(input, output, session) {
           list(targets = 5, orderData = 8),
           list(targets = 6, orderData = 9),
           # Hide the sort helper and abbrev columns
-          list(targets = c(7, 8, 9, 10), visible = FALSE)
+          list(targets = c(7, 8, 9, 10), visible = FALSE),
+          # Responsive priorities: 1 = always show, higher = hide first
+          # On narrow screens: keep Rank, Logo, Overall — drop Team first, then the rest
+          list(targets = c(0, 1, 3), responsivePriority = 1),  # Rank, Logo, Overall (always show)
+          list(targets = 2,          responsivePriority = 2),  # Team (collapses first)
+          list(targets = 4,          responsivePriority = 3),  # Offense
+          list(targets = 5,          responsivePriority = 4),  # Pitching
+          list(targets = 6,          responsivePriority = 5)   # Fielding
         )
       )
     ) %>%
@@ -3857,41 +4766,66 @@ server <- function(input, output, session) {
           paste0('<img src="', team_logo_espn,
                  '" height="22" style="vertical-align:middle;">'),
           ""
-        )
+        ),
+        # Alias player_id as player_id_ so DT doesn't drop it as a dup
+        player_id_ = player_id
       ) %>%
-      dplyr::select(Rank, Logo, Player, Team, Role, PA,
-                    Hitting, Baserunning, Pitching, Fielding, Overall)
-    
-    # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Team=3, Role=4, PA=5,
-    #   Hitting=6, Baserunning=7, Pitching=8, Fielding=9, Overall=10
-    signed_cols   <- c(6, 7, 8, 9, 10)
+      dplyr::select(Rank, Logo, Player, Overall, Team, Role, PA,
+                    Hitting, Baserunning, Pitching, Fielding,
+                    player_id_)  # hidden — used for row-click
+
+    # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Overall=3, Team=4,
+    #   Role=5, PA=6, Hitting=7, Baserunning=8, Pitching=9, Fielding=10
+    #   player_id_=11 (hidden)
+    signed_cols   <- c(3, 7, 8, 9, 10)
     centered_cols <- c(0, 3, 4, 5, 6, 7, 8, 9, 10)
-    
+
+    player_row_click_js <- JS(
+      "function(row, data, index) {",
+      "  $(row).css('cursor', 'pointer');",
+      "  $(row).on('click', function(e) {",
+      "    if ($(e.target).closest('td.dtr-control').length > 0) return;",
+      "    Shiny.setInputValue('player_table_row_clicked', data[11], {priority: 'event'});",
+      "  });",
+      "}"
+    )
+
     datatable(
       pv,
-      rownames = FALSE,
-      escape   = FALSE,
-      class    = "compact stripe hover",
-      options  = list(
+      rownames   = FALSE,
+      escape     = FALSE,
+      class      = "compact stripe hover",
+      extensions = "Responsive",
+      options    = list(
         pageLength  = 25,
-        # Default sort: Overall descending (column index 10)
-        order       = list(list(10, "desc")),
-        scrollX     = TRUE,
+        # Default sort: Overall descending (column index 3)
+        order       = list(list(3, "desc")),
+        responsive  = TRUE,
         dom         = "frtip",
-        # Client-side processing: search/sort happens in the browser with zero
-        # server round-trips, making name search near-instantaneous.
         searchDelay = 100,
+        rowCallback = player_row_click_js,
         columnDefs  = list(
           list(orderable = FALSE, targets = 1),
           list(width = "36px",    targets = 1),
           list(className = "dt-center", targets = centered_cols),
           list(targets = signed_cols, render = signed_render),
           # Run value columns sort descending first (higher = better)
-          list(targets = c(6, 7, 8, 9, 10), orderSequence = list("desc", "asc")),
+          list(targets = c(3, 7, 8, 9, 10), orderSequence = list("desc", "asc")),
           # Rank sorts ascending first (lower = better)
           list(targets = 0, orderSequence = list("asc", "desc")),
-          # Show dash for N/A cells (hitters have no Pitching; pitchers no Hitting/Baserunning)
-          list(targets = c(6, 7, 8, 9), defaultContent = "—")
+          # Show dash for N/A cells
+          list(targets = c(7, 8, 9, 10), defaultContent = "—"),
+          # Hide the player_id column
+          list(targets = 11, visible = FALSE),
+          # Responsive priorities: always keep Rank, Logo, Player, Overall visible
+          list(targets = c(0, 1, 2, 3), responsivePriority = 1),
+          list(targets = 4,             responsivePriority = 3),  # Team
+          list(targets = 5,             responsivePriority = 4),  # Role
+          list(targets = 6,             responsivePriority = 5),  # PA
+          list(targets = 7,             responsivePriority = 6),  # Hitting
+          list(targets = 8,             responsivePriority = 8),  # Baserunning
+          list(targets = 9,             responsivePriority = 7),  # Pitching
+          list(targets = 10,            responsivePriority = 9)   # Fielding
         )
       )
     ) %>%
@@ -4949,18 +5883,18 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::arrange(dplyr::desc(Overall)) %>%
       dplyr::mutate(Rank = dplyr::row_number()) %>%
-      dplyr::select(Rank, Player, Role,
-                    Hitting, Baserunning, Pitching, Fielding, Overall)
+      dplyr::select(Rank, Player, Overall, Role,
+                    Hitting, Baserunning, Pitching, Fielding)
 
     # Keep raw numeric copies for sorting BEFORE converting to HTML strings.
     # NA → -Inf so dashes sort below all real values.
     pv_display <- pv_display %>%
       dplyr::mutate(
+        ovr_sort = dplyr::coalesce(Overall,     -Inf),
         hit_sort = dplyr::coalesce(Hitting,     -Inf),
         br_sort  = dplyr::coalesce(Baserunning, -Inf),
         pit_sort = dplyr::coalesce(Pitching,    -Inf),
-        fld_sort = dplyr::coalesce(Fielding,    -Inf),
-        ovr_sort = dplyr::coalesce(Overall,     -Inf)
+        fld_sort = dplyr::coalesce(Fielding,    -Inf)
       )
 
     fmt_signed <- function(x) {
@@ -4972,31 +5906,33 @@ server <- function(input, output, session) {
 
     pv_display <- pv_display %>%
       dplyr::mutate(
+        Overall     = fmt_signed(Overall),
         Hitting     = fmt_signed(Hitting),
         Baserunning = fmt_signed(Baserunning),
         Pitching    = fmt_signed(Pitching),
-        Fielding    = fmt_signed(Fielding),
-        Overall     = fmt_signed(Overall)
+        Fielding    = fmt_signed(Fielding)
       )
 
     # Column indices (0-indexed):
-    #  0 Rank | 1 Player | 2 Role |
-    #  3 Hitting | 4 Baserunning | 5 Pitching | 6 Fielding | 7 Overall
-    #  8 hit_sort | 9 br_sort | 10 pit_sort | 11 fld_sort | 12 ovr_sort (hidden)
+    #  0 Rank | 1 Player | 2 Overall | 3 Role |
+    #  4 Hitting | 5 Baserunning | 6 Pitching | 7 Fielding
+    #  8 ovr_sort | 9 hit_sort | 10 br_sort | 11 pit_sort | 12 fld_sort (hidden)
     centered_cols <- c(0, 2, 3, 4, 5, 6, 7)
-    run_val_cols  <- c(3, 4, 5, 6, 7)
+    run_val_cols  <- c(2, 4, 5, 6, 7)
 
     datatable(
       pv_display,
-      rownames = FALSE,
-      escape   = FALSE,
-      class    = "compact stripe hover",
-      options  = list(
+      rownames   = FALSE,
+      escape     = FALSE,
+      class      = "compact stripe hover",
+      extensions = "Responsive",
+      options    = list(
         dom        = "tp",
         pageLength = 25,
         ordering   = TRUE,
-        # Default: sort by Overall (col 7) descending
-        order      = list(list(12, "desc")),
+        responsive = TRUE,
+        # Default: sort by Overall (col 2, via hidden sort col 8) descending
+        order      = list(list(8, "desc")),
         columnDefs = list(
           list(className      = "dt-center", targets = centered_cols),
           # Run value cols: first click sorts descending
@@ -5004,13 +5940,20 @@ server <- function(input, output, session) {
           # Rank col: first click sorts ascending
           list(orderSequence = list("asc", "desc"),  targets = 0),
           # Point each HTML column to its hidden numeric sort twin
-          list(orderData = 8,  targets = 3),
+          list(orderData = 8,  targets = 2),
           list(orderData = 9,  targets = 4),
           list(orderData = 10, targets = 5),
           list(orderData = 11, targets = 6),
           list(orderData = 12, targets = 7),
           # Hide the sort helper columns
-          list(visible = FALSE, targets = c(8, 9, 10, 11, 12))
+          list(visible = FALSE, targets = c(8, 9, 10, 11, 12)),
+          # Responsive priorities: always keep Rank, Player, Overall
+          list(targets = c(0, 1, 2), responsivePriority = 1),
+          list(targets = 3,          responsivePriority = 3),  # Role
+          list(targets = 4,          responsivePriority = 4),  # Hitting
+          list(targets = 6,          responsivePriority = 5),  # Pitching
+          list(targets = 5,          responsivePriority = 7),  # Baserunning
+          list(targets = 7,          responsivePriority = 8)   # Fielding
         )
       ),
       caption = tags$caption(
