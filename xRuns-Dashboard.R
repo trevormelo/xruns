@@ -3618,17 +3618,17 @@ server <- function(input, output, session) {
     
     hover_txt <- paste0(
       "<b>", tt$team_name, "</b>",
-      "<br>Overall: ", sprintf("%+.2f", tt$overall),
-      "<br>Offense: ", sprintf("%+.2f", tt$off_rating),
-      "  (Hit ",       sprintf("%+.2f", tt$off_hitting),
-      " + BR ",        sprintf("%+.2f", tt$off_br), ")",
-      "<br>Defense: ", sprintf("%+.2f", tt$def_rating),
-      "  (Pit ",       sprintf("%+.2f", tt$def_pitching),
-      " + Fld ",       sprintf("%+.2f", tt$def_fld), ")"
+      "<br>Overall  ", sprintf("%+.2f", tt$overall),
+      "<br>Off  ", sprintf("%+.2f", tt$off_rating),
+      "  (Hit ", sprintf("%+.2f", tt$off_hitting),
+      " · BR ", sprintf("%+.2f", tt$off_br), ")",
+      "<br>Def  ", sprintf("%+.2f", tt$def_rating),
+      "  (Pit ", sprintf("%+.2f", tt$def_pitching),
+      " · Fld ", sprintf("%+.2f", tt$def_fld), ")"
     )
-    
+
     has_logos <- !all(is.na(tt$team_logo_espn))
-    
+
     p <- plot_ly() %>%
       # Quadrant reference lines
       add_segments(x = 0, xend = 0, y = y_rng[1], yend = y_rng[2],
@@ -3637,15 +3637,20 @@ server <- function(input, output, session) {
       add_segments(x = x_rng[1], xend = x_rng[2], y = 0, yend = 0,
                    line = list(color = "#cbd5e0", width = 1, dash = "dot"),
                    showlegend = FALSE, hoverinfo = "none") %>%
-      # Invisible markers for hover tooltips
+      # Invisible markers for hover tooltips — sized to cover the logo footprint
       add_trace(
         x           = x_vals,
         y           = y_vals,
         type        = "scatter",
         mode        = "markers",
-        marker      = list(size = 32, color = "rgba(0,0,0,0)"),
+        marker      = list(size = 48, color = "rgba(0,0,0,0)"),
         text        = hover_txt,
         hoverinfo   = "text",
+        hoverlabel  = list(
+          bgcolor     = "#1e293b",
+          bordercolor = "#334155",
+          font        = list(color = "#f8fafc", family = "Inter", size = 13)
+        ),
         showlegend  = FALSE
       )
     
@@ -3912,13 +3917,13 @@ server <- function(input, output, session) {
     
     hover_txt <- paste0(
       "<b>", sc$Team, " — ", sc$`Team Name`, "</b>",
-      "<br>Model Rating: ", sprintf("%+.2f", sc$overall),
-      "<br>Actual RDiff/G: ", sprintf("%+.2f", sc$rdiff_per_game),
-      "<br>Record: ", sc$`Actual W`, "–", sc$`Actual L`
+      "<br>Model Rating  ", sprintf("%+.2f", sc$overall),
+      "<br>Actual RDiff/G  ", sprintf("%+.2f", sc$rdiff_per_game),
+      "<br>Record  ", sc$`Actual W`, "–", sc$`Actual L`
     )
-    
+
     has_logos <- !all(is.na(sc$team_logo_espn))
-    
+
     p <- plot_ly() %>%
       add_segments(x = rng[1], xend = rng[2], y = rng[1], yend = rng[2],
                    line = list(color = "#cbd5e0", width = 1, dash = "dot"),
@@ -3934,12 +3939,17 @@ server <- function(input, output, session) {
         y          = sc$rdiff_per_game,
         type       = "scatter",
         mode       = "markers",
-        marker     = list(size = 32, color = "rgba(0,0,0,0)"),
+        marker     = list(size = 48, color = "rgba(0,0,0,0)"),
         text       = hover_txt,
         hoverinfo  = "text",
+        hoverlabel = list(
+          bgcolor     = "#1e293b",
+          bordercolor = "#334155",
+          font        = list(color = "#f8fafc", family = "Inter", size = 13)
+        ),
         showlegend = FALSE
       )
-    
+
     if (has_logos) {
       logo_images <- lapply(seq_len(nrow(sc)), function(i) {
         list(
