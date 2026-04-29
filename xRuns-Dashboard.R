@@ -3157,6 +3157,56 @@ ui <- page_navbar(
     )
   ),
   
+  # ---- Tab: Team Breakdown ----
+  nav_panel(
+    title = "Team Breakdown",
+    tags$main(
+      class = "xruns-page",
+
+      # Controls row: team selector + year picker
+      tags$div(
+        style = "display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:24px;",
+        tags$div(
+          style = "flex:1; min-width:220px; max-width:320px;",
+          selectInput(
+            "tb_team",
+            label   = NULL,
+            choices = setNames(TEAM_META$abbrev, TEAM_META$team_name),
+            selected = "LAD"
+          )
+        ),
+        tags$div(season_picker_inline("tb"))
+      ),
+
+      # Section 1 — Team Header
+      uiOutput("tb_header"),
+
+      # Section 2 — Rating Decomposition Bar Chart
+      tags$div(
+        class = "section-heading",
+        "Rating Breakdown",
+        tags$span(class = "section-subheading", "runs/game above average by component")
+      ),
+      tags$div(class = "tab-body", plotlyOutput("tb_bar", height = "280px")),
+
+      # Section 3 — Roster Breakdown
+      tags$div(
+        class = "section-heading",
+        "Roster Breakdown",
+        tags$span(class = "section-subheading", "individual player ratings for this team")
+      ),
+      tags$div(class = "tab-body", DTOutput("tb_players_table")),
+
+      # Section 4 — League Context
+      tags$div(
+        class = "section-heading",
+        "League Context",
+        tags$span(class = "section-subheading", "how this team compares across all 30")
+      ),
+      tags$div(class = "tab-body", plotlyOutput("tb_league_context", height = "260px"))
+    )
+  ),
+
   # ---- Tab: Player Rankings ----
   nav_panel(
     title = "Player Rankings",
@@ -3341,7 +3391,7 @@ server <- function(input, output, session) {
   
   # ---- Season picker sync ----
   picker_ids     <- c("season_year_team", "season_year_players",
-                      "season_year_sc")
+                      "season_year_sc", "season_year_tb")
   current_year_rv <- reactiveVal(as.character(DEFAULT_YEAR))
   
   for (pid in picker_ids) local({
@@ -3360,6 +3410,14 @@ server <- function(input, output, session) {
   
   current_year         <- reactive({ current_year_rv() })
   current_players_view <- reactive(players_view_by_year[[current_year()]])
+
+  # ---- Team table row click → navigate to Team Breakdown ----
+  observeEvent(input$team_table_row_clicked, {
+    abbrev_clicked <- input$team_table_row_clicked
+    if (is.null(abbrev_clicked) || abbrev_clicked == "") return()
+    updateSelectInput(session, "tb_team", selected = abbrev_clicked)
+    nav_select("main_nav", "Team Breakdown")
+  })
   
   # ---- Time period chip toggle (only for years with snapshot history) --------
   # Rendered as plain text chips — quiet by default, minimal visual footprint.
@@ -3554,14 +3612,26 @@ server <- function(input, output, session) {
         Fielding,
         off_sort,
         pit_sort,
-        fld_sort
+        fld_sort,
+        # Hidden: abbrev for row-click navigation (col index 10)
+        abbrev_  = abbrev
       )
-    
+
     # Column indices (0-indexed for DT columnDefs):
     #   0 Rank  1 Logo  2 Team  3 Overall  4 Offense  5 Pitching  6 Fielding
     #   7 off_sort (hidden)  8 pit_sort (hidden)  9 fld_sort (hidden)
+    #   10 abbrev_ (hidden)
     centered_cols  <- c(0, 3, 4, 5, 6)
-    
+
+    row_click_js <- JS(
+      "function(row, data, index) {",
+      "  $(row).css('cursor', 'pointer');",
+      "  $(row).on('click', function() {",
+      "    Shiny.setInputValue('team_table_row_clicked', data[10], {priority: 'event'});",
+      "  });",
+      "}"
+    )
+
     datatable(
       dt,
       rownames = FALSE,
@@ -3574,6 +3644,7 @@ server <- function(input, output, session) {
         order      = list(list(3, "desc")),
         autoWidth  = FALSE,
         scrollX    = TRUE,
+        rowCallback = row_click_js,
         columnDefs = list(
           list(targets = 3,             render = signed_render),
           list(className = "dt-center", targets = centered_cols),
@@ -3587,8 +3658,8 @@ server <- function(input, output, session) {
           list(targets = 4, orderData = 7),
           list(targets = 5, orderData = 8),
           list(targets = 6, orderData = 9),
-          # Hide the numeric sort helper columns
-          list(targets = c(7, 8, 9), visible = FALSE)
+          # Hide the sort helper and abbrev columns
+          list(targets = c(7, 8, 9, 10), visible = FALSE)
         )
       )
     ) %>%
@@ -4578,6 +4649,382 @@ server <- function(input, output, session) {
     )
   })
   
+
+  # ==========================================================================
+  # Team Breakdown tab
+  # ==========================================================================
+
+  # Reactive: one-row slice of the current team table for the selected team
+  selected_team_row <- reactive({
+    tt  <- current_team_tbl()
+    sel <- input$tb_team %||% "LAD"
+    row <- tt %>% dplyr::filter(abbrev == sel)
+    if (nrow(row) == 0) return(NULL)
+    row[1, ]
+  })
+
+  # Reactive: player view filtered to the selected team
+  selected_team_players <- reactive({
+    pv  <- current_players_view()
+    sel <- input$tb_team %||% "LAD"
+    if (is.null(pv)) return(NULL)
+    pv %>% dplyr::filter(Team == sel)
+  })
+
+  # ---- Section 1: Team Header ----
+  output$tb_header <- renderUI({
+    row <- selected_team_row()
+    tt  <- current_team_tbl()
+    if (is.null(row)) return(NULL)
+
+    rank_overall <- which(dplyr::arrange(tt, dplyr::desc(overall))$abbrev  == row$abbrev[1])
+    rank_off     <- which(dplyr::arrange(tt, dplyr::desc(off_rating))$abbrev == row$abbrev[1])
+    rank_def     <- which(dplyr::arrange(tt, dplyr::desc(def_rating))$abbrev == row$abbrev[1])
+    n            <- nrow(tt)
+
+    fmt_rank <- function(r, n) sprintf("#%d of %d", r, n)
+    fmt_val  <- function(v) sprintf("%+.2f", v)
+
+    pill <- function(label, val, rank, color) {
+      tags$div(
+        style = paste0(
+          "display:flex; flex-direction:column; align-items:center; ",
+          "background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; ",
+          "padding:12px 20px; min-width:110px;"
+        ),
+        tags$span(style = "font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8;", label),
+        tags$span(style = paste0("font-size:1.55rem; font-weight:800; color:", color, "; line-height:1.15; margin-top:2px;"), fmt_val(val)),
+        tags$span(style = "font-size:11px; color:#94a3b8; margin-top:2px;", fmt_rank(rank, n))
+      )
+    }
+
+    val_color <- function(v) if (v >= 0) "#047857" else "#b91c1c"
+
+    logo_tag <- if (!is.na(row$team_logo_espn))
+      tags$img(src = row$team_logo_espn, style = "width:72px; height:72px; object-fit:contain;")
+    else
+      tags$div(style = "width:72px; height:72px; background:#f1f5f9; border-radius:10px;")
+
+    tags$div(
+      style = paste0(
+        "display:flex; align-items:center; gap:24px; flex-wrap:wrap; ",
+        "background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; ",
+        "padding:20px 28px; margin-bottom:24px;"
+      ),
+      logo_tag,
+      tags$div(
+        style = "flex:1;",
+        tags$div(style = "font-size:1.4rem; font-weight:800; color:#1e293b; line-height:1.2;", row$team_name),
+        tags$div(style = "font-size:12px; color:#94a3b8; margin-top:3px;", current_year())
+      ),
+      tags$div(
+        style = "display:flex; gap:12px; flex-wrap:wrap;",
+        pill("Overall",  row$overall,     rank_overall, val_color(row$overall)),
+        pill("Offense",  row$off_rating,  rank_off,     val_color(row$off_rating)),
+        pill("Defense",  row$def_rating,  rank_def,     val_color(row$def_rating))
+      )
+    )
+  })
+
+  # ---- Section 2: Rating Decomposition Bar Chart ----
+  output$tb_bar <- renderPlotly({
+    row <- selected_team_row()
+    if (is.null(row)) return(plot_ly() %>% layout(paper_bgcolor = "#ffffff", plot_bgcolor = "#fafafa"))
+
+    # Fixed display order: Hitting, Baserunning, Pitching, Fielding
+    components  <- c("Hitting", "Baserunning", "Pitching", "Fielding")
+    values      <- c(row$off_hitting, row$off_br, row$def_pitching, row$def_fld)
+    colors      <- ifelse(values >= 0, "#047857", "#b91c1c")
+    label_txt   <- sprintf("%+.2f", values)
+    # Place labels outside the bar (above for positive, below for negative)
+    label_pos   <- ifelse(values >= 0, "outside", "outside")
+
+    hover_txt <- paste0(
+      "<b>", components, "</b><br>",
+      sprintf("%+.3f", values), " runs/game"
+    )
+
+    plot_ly(
+      x            = components,
+      y            = values,
+      type         = "bar",
+      marker       = list(color = colors, line = list(color = "#ffffff", width = 1)),
+      text         = label_txt,
+      textposition = "outside",
+      cliponaxis   = FALSE,
+      textfont     = list(size = 13, color = "#475569", family = "Inter"),
+      hoverinfo    = "none",
+      showlegend   = FALSE
+    ) %>%
+      layout(
+        # Force category order so bars always appear L→R as specified
+        xaxis = list(
+          title         = NULL,
+          categoryorder = "array",
+          categoryarray = components,
+          tickfont      = list(size = 13, color = "#475569", family = "Inter"),
+          gridcolor     = "#f1f5f9"
+        ),
+        yaxis = list(
+          title    = list(text = "runs/game above avg", font = list(size = 12, color = "#94a3b8")),
+          tickfont = list(size = 11, color = "#94a3b8"),
+          zeroline = FALSE, gridcolor = "#f1f5f9",
+          # Pad based on the full data spread so small values still get headroom
+          range = list(
+            min(values) - max(diff(range(values)) * 0.22, 0.18),
+            max(values) + max(diff(range(values)) * 0.22, 0.18)
+          )
+        ),
+        shapes = list(list(
+          type = "line", x0 = -0.5, x1 = 3.5, y0 = 0, y1 = 0,
+          line = list(color = "#cbd5e0", width = 1, dash = "dot")
+        )),
+        paper_bgcolor = "#ffffff",
+        plot_bgcolor  = "#fafafa",
+        margin = list(t = 30, r = 20, b = 40, l = 60),
+        font   = list(family = "Inter")
+      ) %>%
+      config(displayModeBar = FALSE)
+  })
+
+  # ---- Section 3: League Context — dot/lollipop chart ----
+  # One chart with three traces (Overall, Offense, Defense). Each team is a
+  # row on the y-axis, sorted by Overall. The selected team row is highlighted.
+  output$tb_league_context <- renderPlotly({
+    tt  <- current_team_tbl()
+    sel <- input$tb_team %||% "LAD"
+
+    is_sel    <- tt$abbrev == sel
+    sel_color <- tt$team_color[is_sel]
+    if (length(sel_color) == 0 || is.na(sel_color)) sel_color <- "#1e293b"
+
+    # Muted version of each team's primary color for non-selected dots.
+    # We achieve this by rendering them at reduced opacity via rgba().
+    # Selected team uses full-saturation team color, larger size, white border.
+    muted_colors <- tt$team_color
+    dot_colors   <- ifelse(is_sel, sel_color, muted_colors)
+    dot_opacity  <- ifelse(is_sel, 1.0, 0.28)
+    dot_size     <- ifelse(is_sel, 14, 8)
+    border_color <- ifelse(is_sel, "#ffffff", "rgba(0,0,0,0)")
+    border_width <- ifelse(is_sel, 2, 0)
+
+    # Hover text: team name + the relevant rating
+    hover_for <- function(metric_label, vals) {
+      paste0(
+        "<b>", tt$team_name, "</b><br>",
+        metric_label, ":  ", sprintf("%+.2f", vals), " runs/game"
+      )
+    }
+
+    # Y-axis categories (fixed order, top-to-bottom)
+    cats <- c("Overall", "Offense", "Defense")
+
+    # x values per category
+    x_overall <- tt$overall
+    x_offense <- tt$off_rating
+    x_defense <- tt$def_rating
+
+    # Build one trace per team so each dot can have its own color + opacity.
+    # This is necessary because Plotly marker color arrays don't support
+    # per-point opacity; we need separate traces for the selected team.
+    #
+    # Strategy: one trace for all non-selected teams (vectorised, fast),
+    # one trace for the selected team on top.
+    not_sel <- !is_sel
+
+    # Flatten all three rows into long-format vectors for the non-selected trace
+    x_bg <- c(x_overall[not_sel], x_offense[not_sel], x_defense[not_sel])
+    y_bg <- c(rep("Overall", sum(not_sel)),
+               rep("Offense", sum(not_sel)),
+               rep("Defense", sum(not_sel)))
+    col_bg    <- rep(muted_colors[not_sel], 3)
+    hover_bg  <- c(
+      hover_for("Overall", x_overall)[not_sel],
+      hover_for("Offense", x_offense)[not_sel],
+      hover_for("Defense", x_defense)[not_sel]
+    )
+
+    # Rows in display order (top → bottom): Overall, Offense, Defense
+    row_labels <- c("Overall", "Offense", "Defense")
+
+    p <- plot_ly() %>%
+      # All non-selected teams — single vectorised trace with per-point colors
+      add_trace(
+        x          = x_bg,
+        y          = factor(y_bg, levels = row_labels),
+        type       = "scatter",
+        mode       = "markers",
+        marker     = list(
+          size    = 9,
+          color   = col_bg,
+          opacity = 0.30,
+          line    = list(width = 0)
+        ),
+        text      = hover_bg,
+        hoverinfo = "text",
+        hoverlabel = list(bgcolor = "#1e293b", bordercolor = "#334155",
+                          font = list(color = "#f8fafc", family = "Inter", size = 13)),
+        showlegend = FALSE,
+        name       = "Other teams"
+      ) %>%
+      # Selected team — three points (one per row), full color, larger, no label
+      add_trace(
+        x    = c(x_overall[is_sel], x_offense[is_sel], x_defense[is_sel]),
+        y    = factor(c("Overall", "Offense", "Defense"), levels = row_labels),
+        type = "scatter",
+        mode = "markers",
+        marker = list(
+          size  = 20,
+          color = sel_color,
+          line  = list(color = "#ffffff", width = 2.5)
+        ),
+        hovertext = c(
+          hover_for("Overall", x_overall)[is_sel],
+          hover_for("Offense", x_offense)[is_sel],
+          hover_for("Defense", x_defense)[is_sel]
+        ),
+        hoverinfo  = "text",
+        hoverlabel = list(bgcolor = "#1e293b", bordercolor = "#334155",
+                          font = list(color = "#f8fafc", family = "Inter", size = 13)),
+        showlegend = FALSE,
+        name       = sel
+      ) %>%
+      layout(
+        xaxis = list(
+          title    = list(text = "runs/game above avg",
+                          font = list(size = 12, color = "#94a3b8")),
+          zeroline = FALSE, gridcolor = "#f1f5f9",
+          tickfont = list(size = 11, color = "#94a3b8")
+        ),
+        yaxis = list(
+          title    = NULL,
+          type     = "category",
+          categoryorder = "array",
+          categoryarray = rev(row_labels),  # Overall on top
+          tickfont = list(size = 13, color = "#1e293b", family = "Inter"),
+          gridcolor = "#e2e8f0"
+        ),
+        # Zero reference line via shapes (avoids corrupting y-axis type)
+        shapes = list(list(
+          type = "line",
+          x0 = 0, x1 = 0,
+          y0 = -0.5, y1 = 2.5,
+          yref = "y",
+          line = list(color = "#cbd5e0", width = 1, dash = "dot")
+        )),
+        paper_bgcolor = "#ffffff",
+        plot_bgcolor  = "#fafafa",
+        margin = list(t = 20, r = 50, b = 50, l = 80),
+        font   = list(family = "Inter")
+      ) %>%
+      config(displayModeBar = FALSE)
+
+    p
+  })
+
+  # ---- Section 4: Roster Breakdown Table ----
+  output$tb_players_table <- renderDT({
+    pv  <- selected_team_players()
+    yr  <- current_year()
+    sel <- input$tb_team %||% "LAD"
+
+    if (is.null(pv) || nrow(pv) == 0) {
+      msg <- if (is.null(current_players_view()))
+        sprintf("Individual player data for %s is not yet available.", yr)
+      else
+        sprintf("No player data found for %s in %s.", sel, yr)
+      return(datatable(
+        data.frame(Message = msg),
+        rownames = FALSE,
+        options  = list(dom = "t", pageLength = 1)
+      ))
+    }
+
+    dual_player_ids <- pv$player_id[pv$Role == "Player"]
+
+    pv_display <- pv %>%
+      dplyr::filter(
+        Role == "Player" | (Role %in% c("Hitter", "Pitcher") &
+                              !(player_id %in% dual_player_ids))
+      ) %>%
+      dplyr::arrange(dplyr::desc(Overall)) %>%
+      dplyr::mutate(Rank = dplyr::row_number()) %>%
+      dplyr::select(Rank, Player, Role,
+                    Hitting, Baserunning, Pitching, Fielding, Overall)
+
+    # Keep raw numeric copies for sorting BEFORE converting to HTML strings.
+    # NA → -Inf so dashes sort below all real values.
+    pv_display <- pv_display %>%
+      dplyr::mutate(
+        hit_sort = dplyr::coalesce(Hitting,     -Inf),
+        br_sort  = dplyr::coalesce(Baserunning, -Inf),
+        pit_sort = dplyr::coalesce(Pitching,    -Inf),
+        fld_sort = dplyr::coalesce(Fielding,    -Inf),
+        ovr_sort = dplyr::coalesce(Overall,     -Inf)
+      )
+
+    fmt_signed <- function(x) {
+      ifelse(is.na(x), "—",
+             ifelse(x >= 0,
+                    sprintf('<span style="color:#047857">%+.2f</span>', x),
+                    sprintf('<span style="color:#b91c1c">%+.2f</span>', x)))
+    }
+
+    pv_display <- pv_display %>%
+      dplyr::mutate(
+        Hitting     = fmt_signed(Hitting),
+        Baserunning = fmt_signed(Baserunning),
+        Pitching    = fmt_signed(Pitching),
+        Fielding    = fmt_signed(Fielding),
+        Overall     = fmt_signed(Overall)
+      )
+
+    # Column indices (0-indexed):
+    #  0 Rank | 1 Player | 2 Role |
+    #  3 Hitting | 4 Baserunning | 5 Pitching | 6 Fielding | 7 Overall
+    #  8 hit_sort | 9 br_sort | 10 pit_sort | 11 fld_sort | 12 ovr_sort (hidden)
+    centered_cols <- c(0, 2, 3, 4, 5, 6, 7)
+    run_val_cols  <- c(3, 4, 5, 6, 7)
+
+    datatable(
+      pv_display,
+      rownames = FALSE,
+      escape   = FALSE,
+      class    = "compact stripe hover",
+      options  = list(
+        dom        = "tp",
+        pageLength = 25,
+        ordering   = TRUE,
+        # Default: sort by Overall (col 7) descending
+        order      = list(list(12, "desc")),
+        columnDefs = list(
+          list(className      = "dt-center", targets = centered_cols),
+          # Run value cols: first click sorts descending
+          list(orderSequence = list("desc", "asc"), targets = run_val_cols),
+          # Rank col: first click sorts ascending
+          list(orderSequence = list("asc", "desc"),  targets = 0),
+          # Point each HTML column to its hidden numeric sort twin
+          list(orderData = 8,  targets = 3),
+          list(orderData = 9,  targets = 4),
+          list(orderData = 10, targets = 5),
+          list(orderData = 11, targets = 6),
+          list(orderData = 12, targets = 7),
+          # Hide the sort helper columns
+          list(visible = FALSE, targets = c(8, 9, 10, 11, 12))
+        )
+      ),
+      caption = tags$caption(
+        style = "color:#94a3b8; font-size:11.5px; text-align:left; padding:6px 0;",
+        "Only qualified players are shown (minimum PA / BIP thresholds apply)."
+      )
+    ) %>%
+      formatStyle(columns = seq_len(ncol(pv_display)),
+                  fontSize = "13.5px", lineHeight = "1.4") %>%
+      formatStyle("Rank",   fontWeight = "bold",  color = "#94a3b8") %>%
+      formatStyle("Player", fontWeight = "600",   color = "#1e293b") %>%
+      formatStyle("Role",   color = "#64748b",    fontStyle = "italic")
+  })
+
 }
 
 shinyApp(ui, server)
