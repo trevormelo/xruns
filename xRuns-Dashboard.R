@@ -2016,6 +2016,8 @@ custom_css <- HTML("
     }
     table.dataTable thead th { font-size: 0.62rem !important; }
     .tab-body { padding: 10px 8px 16px !important; }
+    /* Hide team name column on mobile — logo is enough */
+    th.team-name-col, td.team-name-col { display: none !important; }
   }
   /* Section grid */
   .xruns-pp-grid {
@@ -4487,7 +4489,8 @@ server <- function(input, output, session) {
         ` `          = ifelse(
           !is.na(team_logo_espn),
           paste0('<img src="', team_logo_espn,
-                 '" height="26" style="vertical-align:middle; margin-right:2px;">'),
+                 '" height="26" title="', team_name,
+                 '" style="vertical-align:middle; margin-right:2px;">'),
           paste0('<span style="font-weight:700;">', abbrev, '</span>')
         ),
         Offense      = mapply(make_ranked_cell, off_rating,   off_rank),
@@ -4501,7 +4504,7 @@ server <- function(input, output, session) {
       transmute(
         Rank     = rank,
         ` `,
-        Team     = team_name,
+        Team     = team_name,            # col 2 — hidden on mobile via CSS
         Overall  = round(overall, 4),   # col 3 — always visible
         Offense,
         Pitching,
@@ -4517,17 +4520,13 @@ server <- function(input, output, session) {
     #   0 Rank  1 Logo  2 Team  3 Overall  4 Offense  5 Pitching  6 Fielding
     #   7 off_sort (hidden)  8 pit_sort (hidden)  9 fld_sort (hidden)
     #   10 abbrev_ (hidden)
-    #
-    # Responsive priority (lower = hides last / stays visible longest):
-    #   Rank=1, Logo=2, Team=1, Overall=1 → always visible
-    #   Offense=3, Pitching=4, Fielding=5 → collapse first on narrow screens
-    centered_cols  <- c(0, 3, 4, 5, 6)
+    # Team col (2) is always in the DOM; CSS class "team-name-col" hides it on mobile.
+    centered_cols  <- c(0, 1, 3, 4, 5, 6)
 
     row_click_js <- JS(
       "function(row, data, index) {",
       "  $(row).css('cursor', 'pointer');",
       "  $(row).on('click', function(e) {",
-      "    if ($(e.target).closest('td.dtr-control').length > 0) return;",
       "    Shiny.setInputValue('team_table_row_clicked', data[10], {priority: 'event'});",
       "  });",
       "}"
@@ -4538,11 +4537,10 @@ server <- function(input, output, session) {
       rownames    = FALSE,
       escape      = FALSE,
       class       = "compact stripe hover",
-      extensions  = "Responsive",
       options     = list(
         pageLength = 30,
         dom        = "t",
-        responsive = TRUE,
+        scrollX    = TRUE,
         # Default sort: Overall descending (column index 3)
         order      = list(list(3, "desc")),
         autoWidth  = FALSE,
@@ -4552,6 +4550,8 @@ server <- function(input, output, session) {
           list(className = "dt-center", targets = centered_cols),
           list(orderable = FALSE,       targets = 1),
           list(width = "44px",          targets = 1),
+          # Team column: assign class so CSS can hide it on mobile
+          list(targets = 2, className = "team-name-col"),
           # Run value columns: clicking sorts descending first (higher = better)
           list(targets = c(3, 4, 5, 6), orderSequence = list("desc", "asc")),
           # Rank column: clicking sorts ascending first (lower number = better)
@@ -4561,14 +4561,7 @@ server <- function(input, output, session) {
           list(targets = 5, orderData = 8),
           list(targets = 6, orderData = 9),
           # Hide the sort helper and abbrev columns
-          list(targets = c(7, 8, 9, 10), visible = FALSE),
-          # Responsive priorities: 1 = always show, higher = hide first
-          # On narrow screens: keep Rank, Logo, Overall — drop Team first, then the rest
-          list(targets = c(0, 1, 3), responsivePriority = 1),  # Rank, Logo, Overall (always show)
-          list(targets = 2,          responsivePriority = 2),  # Team (collapses first)
-          list(targets = 4,          responsivePriority = 3),  # Offense
-          list(targets = 5,          responsivePriority = 4),  # Pitching
-          list(targets = 6,          responsivePriority = 5)   # Fielding
+          list(targets = c(7, 8, 9, 10), visible = FALSE)
         )
       )
     ) %>%
@@ -4795,13 +4788,12 @@ server <- function(input, output, session) {
       rownames   = FALSE,
       escape     = FALSE,
       class      = "compact stripe hover",
-      extensions = "Responsive",
       options    = list(
         pageLength  = 25,
         # Default sort: Overall descending (column index 3)
         order       = list(list(3, "desc")),
-        responsive  = TRUE,
         dom         = "frtip",
+        scrollX     = TRUE,
         searchDelay = 100,
         rowCallback = player_row_click_js,
         columnDefs  = list(
@@ -4816,16 +4808,7 @@ server <- function(input, output, session) {
           # Show dash for N/A cells
           list(targets = c(7, 8, 9, 10), defaultContent = "—"),
           # Hide the player_id column
-          list(targets = 11, visible = FALSE),
-          # Responsive priorities: always keep Rank, Logo, Player, Overall visible
-          list(targets = c(0, 1, 2, 3), responsivePriority = 1),
-          list(targets = 4,             responsivePriority = 3),  # Team
-          list(targets = 5,             responsivePriority = 4),  # Role
-          list(targets = 6,             responsivePriority = 5),  # PA
-          list(targets = 7,             responsivePriority = 6),  # Hitting
-          list(targets = 8,             responsivePriority = 8),  # Baserunning
-          list(targets = 9,             responsivePriority = 7),  # Pitching
-          list(targets = 10,            responsivePriority = 9)   # Fielding
+          list(targets = 11, visible = FALSE)
         )
       )
     ) %>%
@@ -5925,12 +5908,11 @@ server <- function(input, output, session) {
       rownames   = FALSE,
       escape     = FALSE,
       class      = "compact stripe hover",
-      extensions = "Responsive",
       options    = list(
         dom        = "tp",
         pageLength = 25,
         ordering   = TRUE,
-        responsive = TRUE,
+        scrollX    = TRUE,
         # Default: sort by Overall (col 2, via hidden sort col 8) descending
         order      = list(list(8, "desc")),
         columnDefs = list(
@@ -5946,14 +5928,7 @@ server <- function(input, output, session) {
           list(orderData = 11, targets = 6),
           list(orderData = 12, targets = 7),
           # Hide the sort helper columns
-          list(visible = FALSE, targets = c(8, 9, 10, 11, 12)),
-          # Responsive priorities: always keep Rank, Player, Overall
-          list(targets = c(0, 1, 2), responsivePriority = 1),
-          list(targets = 3,          responsivePriority = 3),  # Role
-          list(targets = 4,          responsivePriority = 4),  # Hitting
-          list(targets = 6,          responsivePriority = 5),  # Pitching
-          list(targets = 5,          responsivePriority = 7),  # Baserunning
-          list(targets = 7,          responsivePriority = 8)   # Fielding
+          list(visible = FALSE, targets = c(8, 9, 10, 11, 12))
         )
       ),
       caption = tags$caption(
