@@ -501,15 +501,15 @@ load_year <- function(base, y) {
   
   batters <- batters %>%
     mutate(
-      fld_runs    = dplyr::coalesce(fld_runs, 0),
-      fld_outs    = dplyr::coalesce(fld_outs, 0),
-      fld_per_out = ifelse(fld_outs > 0, fld_runs / fld_outs, 0)
+      fld_runs    = dplyr::coalesce(fld_runs, NA_real_),
+      fld_outs    = dplyr::coalesce(fld_outs, NA_real_),
+      fld_per_out = ifelse(!is.na(fld_outs) & fld_outs > 0, fld_runs / fld_outs, NA_real_)
     )
   pitchers <- pitchers %>%
     mutate(
-      fld_runs    = dplyr::coalesce(fld_runs, 0),
-      fld_outs    = dplyr::coalesce(fld_outs, 0),
-      fld_per_out = ifelse(fld_outs > 0, fld_runs / fld_outs, 0)
+      fld_runs    = dplyr::coalesce(fld_runs, NA_real_),
+      fld_outs    = dplyr::coalesce(fld_outs, NA_real_),
+      fld_per_out = ifelse(!is.na(fld_outs) & fld_outs > 0, fld_runs / fld_outs, NA_real_)
     )
   
   list(year = y, batters = batters, pitchers = pitchers, standings = st,
@@ -1302,7 +1302,49 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY
     )
   
-  dplyr::bind_rows(bat_rows, pit_rows) %>%
+  all_rows <- dplyr::bind_rows(bat_rows, pit_rows)
+
+  # ---- Two-way player merging (e.g. Ohtani) ------------------------------------
+  # Any player_id that appears in BOTH bat_rows and pit_rows gets a combined row
+  # with Role = "Player" that carries all four stat columns populated. The original
+  # single-role rows are kept so that single-role filtering still works correctly.
+  dual_ids <- intersect(bat_rows$player_id, pit_rows$player_id)
+
+  if (length(dual_ids) > 0) {
+    dual_bat <- bat_rows %>% dplyr::filter(player_id %in% dual_ids)
+    dual_pit <- pit_rows %>% dplyr::filter(player_id %in% dual_ids)
+
+    combined <- dplyr::inner_join(
+      dual_bat %>% dplyr::select(player_id, Player, Team,
+                                  PA_hit = PA, xwOBA_hit = xwOBA,
+                                  Hitting, Baserunning,
+                                  Fielding_hit = Fielding),
+      dual_pit %>% dplyr::select(player_id,
+                                  PA_pit = PA, xwOBA_pit = xwOBA,
+                                  Pitching,
+                                  Fielding_pit = Fielding),
+      by = "player_id"
+    ) %>%
+      dplyr::mutate(
+        Role    = "Player",
+        PA      = PA_hit + PA_pit,
+        xwOBA   = round((xwOBA_hit * PA_hit + xwOBA_pit * PA_pit) /
+                          pmax(PA_hit + PA_pit, 1), 3),
+        # Sum fielding across both roles; keep NA only if both were NA
+        Fielding = ifelse(
+          is.na(Fielding_hit) & is.na(Fielding_pit),
+          NA_real_,
+          dplyr::coalesce(Fielding_hit, 0) + dplyr::coalesce(Fielding_pit, 0)
+        )
+      ) %>%
+      dplyr::select(player_id, Player, Team, Role, PA, xwOBA,
+                    Hitting, Baserunning, Pitching, Fielding)
+
+    # Bind: single-role rows stay intact; combined row is appended
+    all_rows <- dplyr::bind_rows(all_rows, combined)
+  }
+
+  all_rows %>%
     dplyr::mutate(
       Overall = rowSums(
         cbind(Hitting, Baserunning, Pitching, Fielding),
@@ -2350,23 +2392,23 @@ product_css <- HTML("
   }
   .xruns-hero {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
-    gap: 18px;
+    grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+    gap: 12px;
     align-items: stretch;
-    margin-bottom: 18px;
+    margin-bottom: 14px;
   }
   .xruns-hero-main,
   .xruns-hero-panel {
     background: var(--xr-paper);
     border: 1px solid rgba(21, 25, 34, 0.10);
     border-radius: 8px;
-    box-shadow: 0 18px 45px rgba(21, 25, 34, 0.08);
+    box-shadow: 0 8px 24px rgba(21, 25, 34, 0.06);
   }
   .xruns-hero-main {
     position: relative;
     overflow: hidden;
-    padding: 34px 36px 32px;
-    border-top: 5px solid var(--xr-red);
+    padding: 18px 22px 16px;
+    border-top: 4px solid var(--xr-red);
   }
   .xruns-hero-main:after {
     content: '';
@@ -2388,7 +2430,7 @@ product_css <- HTML("
     font-weight: 850;
     letter-spacing: 0.13em;
     text-transform: uppercase;
-    margin-bottom: 12px;
+    margin-bottom: 6px;
   }
   .xruns-hero h1,
   .xruns-feature-head h1 {
@@ -2404,18 +2446,18 @@ product_css <- HTML("
   .xruns-feature-copy {
     position: relative;
     max-width: 760px;
-    margin: 16px 0 0;
+    margin: 8px 0 0;
     color: #485264;
-    font-size: 1.01rem;
-    line-height: 1.68;
+    font-size: 0.9rem;
+    line-height: 1.6;
     z-index: 1;
   }
   .xruns-hero-panel {
-    padding: 24px;
+    padding: 14px 18px;
     display: grid;
     align-content: center;
-    gap: 14px;
-    border-top: 5px solid var(--xr-blue);
+    gap: 8px;
+    border-top: 4px solid var(--xr-blue);
   }
   .xruns-panel-label {
     color: var(--xr-muted);
@@ -2899,34 +2941,37 @@ ui <- page_navbar(
   
   # ---- Tab: Team Rankings ----
   nav_panel(
-    title = tagList(tags$i(class = "fa-solid fa-ranking-star me-1"), "Team Rankings"),
+    title = "Team Rankings",
     tags$main(
       class = "xruns-page",
-      # Info banner — collapsible, only on this tab
+
+      # ---- Hero / landing block ----
       tags$div(
-        class = "xruns-explainer-wrap",
-        tags$details(
-          class = "xruns-explainer",
-          tags$summary(
-            tags$i(class = "fa-solid fa-circle-info me-2"),
-            "How to interpret the numbers"
+        class = "xruns-hero",
+        tags$div(
+          class = "xruns-hero-main",
+          tags$div(class = "xruns-kicker", "MLB Performance Ratings"),
+          tags$p(
+            class = "xruns-hero-copy",
+            "xRuns rates every MLB team and player using expected performance stats — ",
+            "what they should have scored, not just what they did. ",
+            "No luck. No noise. Just signal."
+          )
+        ),
+        tags$div(
+          class = "xruns-hero-panel",
+          tags$div(class = "xruns-panel-label", "How ratings work"),
+          tags$p(
+            style = "font-size:12.5px; line-height:1.6; color:#485264; margin:0;",
+            tags$b("Overall"), " = runs/game above a league-average team. ",
+            tags$b("Positive is good"), "; 0 = exactly average. ",
+            tags$b("Offense"), " = hitting + baserunning. ",
+            tags$b("Defense"), " = pitching + fielding."
           ),
-          tags$div(
-            class = "xruns-explainer-body",
-            tags$b("Overall"), " = expected run margin vs. an average MLB team in a 9-inning game. ",
-            tags$b("Offense"), " = hitting + baserunning runs scored above average per game. ",
-            tags$b("Defense"), " = pitching + fielding runs prevented above average per game.",
-            tags$br(),
-            tags$span(
-              "Regression model trained on ",
-              tags$span(class = "info-stat", textOutput("pool_bat_n", inline = TRUE)),
-              " batter-seasons and ",
-              tags$span(class = "info-stat", textOutput("pool_pit_n", inline = TRUE)),
-              " pitcher-seasons (2022-", most_recent_player_yr, "). ",
-              "Current season (", DEFAULT_YEAR, ") ratings use team-level expected stats applied through that model; ",
-              "baserunning and fielding are from current-year Statcast run-value data. ",
-              "Ratings are centered at 0 = league average each year."
-            )
+          tags$p(
+            style = "font-size:12px; line-height:1.55; color:#64748b; margin:4px 0 0;",
+            "Built from Statcast expected stats (xwOBA, xERA) — ",
+            "a hot streak or lucky week won't inflate a rating."
           )
         )
       ),
@@ -2958,7 +3003,7 @@ ui <- page_navbar(
   
   # ---- Tab: Matchup Simulator ----
   nav_panel(
-    title = tagList(tags$i(class = "fa-solid fa-bolt me-1"), "Matchup Simulator"),
+    title = "Matchup Simulator",
     
     tags$head(tags$style(HTML("
       .mp-vs { font-size:1.5rem; font-weight:700; color:#cbd5e0;
@@ -3114,16 +3159,22 @@ ui <- page_navbar(
   
   # ---- Tab: Player Rankings ----
   nav_panel(
-    title = tagList(tags$i(class = "fa-solid fa-baseball-bat-ball me-1"), "Player Rankings"),
+    title = "Player Rankings",
     tags$main(
       class = "xruns-page",
       tags$div(
         class = "xruns-explainer-wrap",
+        # Always-visible plain-English summary
+        tags$p(
+          style = "margin: 0 0 8px; font-size:13.5px; color:#485264; line-height:1.55;",
+          tags$b("+1.0"), " = one extra run per 9 innings above a league-average player. ",
+          "Positive is good. Blanks (—) mean that stat doesn't apply to that player's role."
+        ),
         tags$details(
           class = "xruns-explainer",
           tags$summary(
             tags$i(class = "fa-solid fa-circle-info me-2"),
-            "How to interpret the numbers"
+            "Technical details"
           ),
           tags$div(
             class = "xruns-explainer-body",
@@ -3133,7 +3184,9 @@ ui <- page_navbar(
             "per 9 innings than average through their hitting alone. A value of +1.0 is elite; ",
             "most qualified players fall between -1.0 and +1.0. ",
             tags$b("Overall"), " = Hitting + Baserunning + Pitching + Fielding, the total ",
-            "runs per 9 innings that player adds above an average player across all facets of the game."
+            "runs per 9 innings that player adds above an average player across all facets of the game. ",
+            "Dashes (—) appear where a stat is not applicable — hitters have no Pitching rating; ",
+            "pitchers have no Hitting or Baserunning rating."
           )
         ),
       ),
@@ -3144,7 +3197,7 @@ ui <- page_navbar(
   
   # ---- Tab: Methodology ----
   nav_panel(
-    title = tagList(tags$i(class = "fa-solid fa-flask me-1"), "Methodology"),
+    title = "Methodology",
     tags$main(
       class = "xruns-page",
       tags$section(
@@ -3445,7 +3498,7 @@ server <- function(input, output, session) {
   signed_render <- JS(
     "function(data, type, row) {",
     "  if (type === 'display' || type === 'filter') {",
-    "    if (data === null || data === undefined || data === '' || isNaN(data)) return '';",
+    "    if (data === null || data === undefined || data === '' || isNaN(data)) return '—';",
     "    var n = Number(data);",
     "    return (n > 0 ? '+' : '') + n.toFixed(2);",
     "  }",
@@ -3699,9 +3752,23 @@ server <- function(input, output, session) {
     if (is.null(roles_selected) || length(roles_selected) == 0) {
       roles_selected <- c("Hitter", "Pitcher")
     }
-    
+
+    both_selected <- all(c("Hitter", "Pitcher") %in% roles_selected)
+
+    # player_ids that have a merged "Player" row (two-way players like Ohtani)
+    dual_player_ids <- pv$player_id[pv$Role == "Player"]
+
     pv <- pv %>%
-      dplyr::filter(Role %in% roles_selected) %>%
+      dplyr::filter(
+        if (both_selected) {
+          # Show merged "Player" row for duals; suppress their individual rows
+          Role == "Player" | (Role %in% c("Hitter", "Pitcher") &
+                                !(player_id %in% dual_player_ids))
+        } else {
+          # Single role: only that role's rows; never show merged "Player" rows
+          Role %in% roles_selected & Role != "Player"
+        }
+      ) %>%
       dplyr::arrange(dplyr::desc(Overall)) %>%
       dplyr::mutate(Rank = dplyr::row_number()) %>%
       dplyr::left_join(
@@ -3735,6 +3802,9 @@ server <- function(input, output, session) {
         order       = list(list(10, "desc")),
         scrollX     = TRUE,
         dom         = "frtip",
+        # Client-side processing: search/sort happens in the browser with zero
+        # server round-trips, making name search near-instantaneous.
+        searchDelay = 100,
         columnDefs  = list(
           list(orderable = FALSE, targets = 1),
           list(width = "36px",    targets = 1),
@@ -3743,7 +3813,9 @@ server <- function(input, output, session) {
           # Run value columns sort descending first (higher = better)
           list(targets = c(6, 7, 8, 9, 10), orderSequence = list("desc", "asc")),
           # Rank sorts ascending first (lower = better)
-          list(targets = 0, orderSequence = list("asc", "desc"))
+          list(targets = 0, orderSequence = list("asc", "desc")),
+          # Show dash for N/A cells (hitters have no Pitching; pitchers no Hitting/Baserunning)
+          list(targets = c(6, 7, 8, 9), defaultContent = "—")
         )
       )
     ) %>%
@@ -3755,8 +3827,8 @@ server <- function(input, output, session) {
       formatStyle(c("Hitting", "Baserunning", "Pitching", "Fielding"),
                   color = styleInterval(c(-0.01, 0.01),
                                         c("#b91c1c", "#64748b", "#047857")))
-  })
-  
+  }, server = FALSE)
+
   # ---- Standings Check ----
   standings_for_year <- reactive({ standings_check[[current_year()]] })
   
