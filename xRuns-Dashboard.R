@@ -4277,7 +4277,7 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
       class = "xruns-share-band",
       tags$div(
         tags$div(class = "xruns-share-brand", "xRuns"),
-        tags$div(class = "xruns-share-kicker", "Player Efficiency Card"),
+        tags$div(class = "xruns-share-kicker", "Player Performance Card"),
         tags$div(class = "xruns-share-title", xruns_safe_text(row$Player)),
         tags$div(
           class = "xruns-share-meta",
@@ -4344,7 +4344,7 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
       class = "xruns-share-band",
       tags$div(
         tags$div(class = "xruns-share-brand", "xRuns"),
-        tags$div(class = "xruns-share-kicker", "Team Efficiency Card"),
+        tags$div(class = "xruns-share-kicker", "Team Performance Card"),
         tags$div(class = "xruns-share-title", xruns_safe_text(row$team_name)),
         tags$div(
           class = "xruns-share-meta",
@@ -4408,7 +4408,7 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
       class = "xruns-share-band",
       tags$div(
         tags$div(class = "xruns-share-brand", "xRuns"),
-        tags$div(class = "xruns-share-kicker", "MLB Efficiency Rankings"),
+        tags$div(class = "xruns-share-kicker", "MLB Performance Rankings"),
         tags$div(class = "xruns-share-title", paste0(season, " Team Rankings")),
         tags$div(
           class = "xruns-share-meta",
@@ -5891,7 +5891,7 @@ server <- function(input, output, session) {
   })
   
   # ---- Headings ----
-  output$team_heading    <- renderText(sprintf("%s Team Efficiency Ratings", current_year()))
+  output$team_heading    <- renderText(sprintf("%s Team Performance Ratings", current_year()))
   output$players_heading <- renderText(sprintf("%s Player Leaderboard", current_year()))
   
   # ---- KPI cards ----
