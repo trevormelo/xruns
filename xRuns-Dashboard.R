@@ -3556,6 +3556,172 @@ product_css <- HTML("
       grid-template-columns: 1fr !important;
     }
   }
+
+  /* ============================================================== */
+  /* ====  MOBILE OVERRIDES (anchored banner + polish)          ==== */
+  /* ============================================================== */
+
+  /* Kill any default top spacing that pushes the banner down.
+     Posit Connect Cloud iframes the page; if the body has a top
+     margin or the navbar isn't sticky, the dark header drifts away
+     from the URL bar and looks 'cut short'. */
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  body {
+    /* Allow safe-area on notched iPhones without leaving a gap above the navbar */
+    padding-top: 0 !important;
+    padding-left: env(safe-area-inset-left, 0) !important;
+    padding-right: env(safe-area-inset-right, 0) !important;
+  }
+
+  /* The page wrapper that bslib injects around content */
+  .bslib-page-fill,
+  .bslib-page-navbar,
+  .bslib-page,
+  body > .container-fluid:first-child {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+  }
+
+  /* Anchor the dark banner to the very top of the viewport.
+     This is the core fix: on mobile the navbar now sticks to the
+     top edge so it visually butts up against the browser URL bar
+     instead of floating in a sea of light grey. */
+  .navbar {
+    position: sticky !important;
+    top: 0 !important;
+    margin-top: 0 !important;
+    width: 100% !important;
+    z-index: 10050 !important;
+    /* Respect iPhone notch safe area */
+    padding-top: max(env(safe-area-inset-top, 0), 0px) !important;
+  }
+
+  /* On mobile specifically, tighten the navbar and make the brand
+     scale gracefully so 'xRuns AN MLB RATINGS SYSTEM' never wraps
+     awkwardly or runs into the hamburger button. */
+  @media (max-width: 768px) {
+    .navbar {
+      min-height: 56px !important;
+      padding: 0 14px !important;
+    }
+    .navbar > .container,
+    .navbar > .container-fluid {
+      min-height: 56px !important;
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+    .navbar-brand {
+      font-size: 1.18rem !important;
+      gap: 8px !important;
+      max-width: calc(100vw - 80px) !important;
+      overflow: hidden !important;
+    }
+    .navbar-brand .xruns-brand-full {
+      display: inline-flex !important;
+      align-items: baseline !important;
+      gap: 8px !important;
+      min-width: 0 !important;
+    }
+    .navbar-brand .brand-sub {
+      font-size: 0.6rem !important;
+      letter-spacing: 0.06em !important;
+      opacity: 0.72;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+    .navbar-toggler,
+    .navbar-toggle {
+      width: 44px !important;
+      height: 44px !important;
+      min-width: 44px !important;
+    }
+  }
+
+  /* On very narrow viewports (≤ 380px, e.g. iPhone SE), shorten the
+     subtitle so 'xRuns' never gets squeezed by the hamburger. */
+  @media (max-width: 380px) {
+    .navbar-brand .brand-sub {
+      font-size: 0.55rem !important;
+    }
+  }
+
+  /* Pull the page content closer to the navbar on mobile so the
+     hero block reads as part of the banner — no awkward grey gap. */
+  @media (max-width: 768px) {
+    .xruns-page {
+      width: 100% !important;
+      max-width: 100% !important;
+      margin: 0 auto !important;
+      padding: 14px 14px 32px !important;
+    }
+    .xruns-hero {
+      gap: 10px !important;
+      margin-bottom: 12px !important;
+    }
+    .xruns-hero-main {
+      padding: 18px 18px 16px !important;
+    }
+    .xruns-hero-panel {
+      padding: 14px 16px !important;
+    }
+    .xruns-kicker {
+      font-size: 0.7rem !important;
+      letter-spacing: 0.1em !important;
+    }
+    .xruns-hero-copy {
+      font-size: 0.92rem !important;
+      line-height: 1.55 !important;
+    }
+    .xruns-panel-label {
+      font-size: 0.7rem !important;
+    }
+  }
+
+  /* Soften the body gradient on mobile: the original gradient peaks
+     at ~340px down, which on a phone viewport (~700px tall in the
+     iframe) creates a visible light band right under the navbar
+     that makes the banner look detached. */
+  @media (max-width: 768px) {
+    html, body {
+      background:
+        linear-gradient(180deg, #f5f7fa 0, #f7f8fb 120px, #f7f8fb 100%) !important;
+    }
+  }
+
+  /* Make the share card downloads / table containers respect the
+     full mobile width so nothing overflows horizontally. */
+  @media (max-width: 768px) {
+    .container-fluid,
+    .tab-content,
+    .tab-pane {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+      max-width: 100% !important;
+    }
+    /* Shiny's auto-generated wrapper around nav_panel content */
+    .tab-content > .tab-pane > .container-fluid {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+  }
+
+  /* Prevent any horizontal scroll bleed from wide tables/cards */
+  @media (max-width: 768px) {
+    body, html {
+      overflow-x: hidden !important;
+      max-width: 100vw !important;
+    }
+  }
+
+  /* Subtle: when navbar is sticky and user scrolls, give it a
+     slightly stronger shadow so it reads as a true app bar. */
+  .navbar {
+    transition: box-shadow 180ms ease;
+  }
 ")
 
 # ---- Share card helpers ------------------------------------------------------
