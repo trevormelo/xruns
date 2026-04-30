@@ -3608,13 +3608,6 @@ xruns_current_base_url <- function(session) {
   paste0(protocol, "//", host, port_part, path)
 }
 
-xruns_file_url <- function(path) {
-  paste0(
-    "file://",
-    utils::URLencode(normalizePath(path, winslash = "/", mustWork = TRUE), reserved = FALSE)
-  )
-}
-
 xruns_share_card_css <- function() {
 '
   * { box-sizing: border-box; }
@@ -4128,6 +4121,7 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
       tags$img(
         class = "xruns-share-headshot",
         src = xruns_headshot_url(row$player_id[1], width = 260),
+        crossorigin = "anonymous",
         alt = xruns_safe_text(row$Player)
       )
     ),
@@ -4192,7 +4186,7 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
         )
       ),
       if (nzchar(logo_url)) {
-        tags$img(class = "xruns-share-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+        tags$img(class = "xruns-share-logo", src = logo_url, crossorigin = "anonymous", alt = xruns_safe_text(row$abbrev))
       }
     ),
     tags$div(
@@ -4220,7 +4214,7 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
       class = "xruns-rank-row",
       tags$div(class = "xruns-rank-num", paste0("#", i)),
       if (nzchar(logo_url)) {
-        tags$img(class = "xruns-rank-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+        tags$img(class = "xruns-rank-logo", src = logo_url, crossorigin = "anonymous", alt = xruns_safe_text(row$abbrev))
       } else {
         tags$div(class = "xruns-rank-logo")
       },
@@ -4289,7 +4283,7 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL) {
     tags$div(
       class = "xruns-matchup-team",
       if (nzchar(logo_url)) {
-        tags$img(class = "xruns-matchup-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+        tags$img(class = "xruns-matchup-logo", src = logo_url, crossorigin = "anonymous", alt = xruns_safe_text(row$abbrev))
       },
       tags$div(class = "xruns-matchup-name", xruns_safe_text(row$team_name))
     )
@@ -4426,38 +4420,6 @@ xruns_apply_rounded_png_mask <- function(file, radius_px = NULL) {
   invisible(file)
 }
 
-xruns_render_share_png <- function(card, file) {
-  if (!requireNamespace("webshot2", quietly = TRUE)) {
-    stop("The webshot2 package is required to create share images.", call. = FALSE)
-  }
-  html_file <- tempfile(fileext = ".html")
-  page <- tags$html(
-    tags$head(
-      tags$meta(charset = "utf-8"),
-      tags$link(rel = "preconnect", href = "https://fonts.googleapis.com"),
-      tags$link(rel = "preconnect", href = "https://fonts.gstatic.com", crossorigin = "anonymous"),
-      tags$link(
-        rel = "stylesheet",
-        href = "https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;800;850;900&display=swap"
-      ),
-      tags$style(HTML(xruns_share_card_css()))
-    ),
-    tags$body(card)
-  )
-  htmltools::save_html(page, file = html_file, background = "transparent")
-  on.exit(unlink(html_file), add = TRUE)
-  webshot2::webshot(
-    url = xruns_file_url(html_file),
-    file = file,
-    selector = ".xruns-share-card",
-    vwidth = 1300,
-    vheight = 760,
-    zoom = 2,
-    delay = 1
-  )
-  xruns_apply_rounded_png_mask(file)
-}
-
 # ---- UI ----------------------------------------------------------------------
 ui <- page_navbar(
   id    = "main_nav",
@@ -4507,10 +4469,64 @@ ui <- page_navbar(
         rel  = "stylesheet",
         href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
       ),
+      tags$link(
+        rel = "stylesheet",
+        href = "https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;800;850;900&display=swap"
+      ),
+      tags$script(src = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"),
       tags$style(custom_css),
       tags$style(product_css),
+      tags$style(HTML(xruns_share_card_css())),
+      tags$style(HTML("
+        #xruns-share-stage {
+          position: fixed;
+          left: -10000px;
+          top: 0;
+          width: 1300px;
+          height: 760px;
+          padding: 28px;
+          background: transparent;
+          pointer-events: none;
+          z-index: -1;
+        }
+      ")),
       # JS: handle year-change reset of time period chips back to Season
       tags$script(HTML("
+        function xrunsDownloadClientShareCard(cardId) {
+          var node = document.getElementById(cardId);
+          if (!node) return;
+          var card = node.querySelector('.xruns-share-card');
+          if (!card || !window.html2canvas) return;
+          var filename = node.getAttribute('data-filename') ||
+            (node.firstElementChild && node.firstElementChild.getAttribute('data-filename')) ||
+            'xruns-share-card.png';
+          html2canvas(card, {
+            backgroundColor: null,
+            scale: 2,
+            useCORS: true,
+            allowTaint: false,
+            logging: false,
+            width: 1200,
+            height: 675,
+            windowWidth: 1300,
+            windowHeight: 760
+          }).then(function(canvas) {
+            canvas.toBlob(function(blob) {
+              if (!blob) return;
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+            }, 'image/png');
+          }).catch(function(err) {
+            console.error('Unable to create share PNG', err);
+            window.alert('The share image could not be created in this browser. Please refresh and try again.');
+          });
+        }
         Shiny.addCustomMessageHandler('resetTimePeriod', function(msg) {
           Shiny.setInputValue('time_period', 'season', {priority: 'event'});
           document.querySelectorAll('.xruns-period-chip').forEach(function(el) {
@@ -4543,6 +4559,13 @@ ui <- page_navbar(
           document.head.appendChild(style);
         });
       "))
+    ),
+    tags$div(
+      id = "xruns-share-stage",
+      uiOutput("client_rankings_share_card"),
+      uiOutput("client_team_share_card"),
+      uiOutput("client_player_share_card"),
+      uiOutput("client_matchup_share_card")
     )
   ),
   
@@ -4593,10 +4616,11 @@ ui <- page_navbar(
         tags$div(class = "xruns-season-chip", season_picker_inline("team")),
         tags$div(
           class = "xruns-share-inline",
-          downloadButton(
-            "download_rankings_card",
+          actionButton(
+            "download_rankings_card_client",
             tagList(tags$i(class = "fa-solid fa-image"), "Share the Rankings"),
-            class = "xruns-share-btn"
+            class = "xruns-share-btn",
+            onclick = "xrunsDownloadClientShareCard('client_rankings_share_card')"
           )
         )
       ),
@@ -4795,10 +4819,11 @@ ui <- page_navbar(
         tags$div(
           class = "xruns-share-inline",
           style = "margin-left:auto;",
-          downloadButton(
-            "download_team_card",
+          actionButton(
+            "download_team_card_client",
             tagList(tags$i(class = "fa-solid fa-image"), "Share Team Profile"),
-            class = "xruns-share-btn"
+            class = "xruns-share-btn",
+            onclick = "xrunsDownloadClientShareCard('client_team_share_card')"
           )
         )
       ),
@@ -5251,27 +5276,20 @@ server <- function(input, output, session) {
       dplyr::slice(1)
   })
 
-  output$download_player_card <- downloadHandler(
-    filename = function() {
-      row <- current_player_row()
-      name <- if (is.null(row) || nrow(row) == 0) "player" else xruns_slug(row$Player)
-      paste0("xruns-player-", name, "-", current_year(), ".png")
-    },
-    content = function(file) {
-      row <- current_player_row()
-      if (is.null(row) || nrow(row) == 0) {
-        stop("Select a player before downloading a share card.", call. = FALSE)
-      }
-      card <- xruns_player_share_card(
+  output$client_player_share_card <- renderUI({
+    row <- current_player_row()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+    name <- xruns_slug(row$Player)
+    tags$div(
+      `data-filename` = paste0("xruns-player-", name, "-", current_year(), ".png"),
+      xruns_player_share_card(
         row = row,
         season = current_year(),
         base_url = xruns_current_base_url(session),
         data_label = paste0(current_year(), " season data")
       )
-      xruns_render_share_png(card, file)
-    },
-    contentType = "image/png"
-  )
+    )
+  })
 
   # ---- Helper: signed value string ----
   signed_str <- function(v, digits = 2) {
@@ -5368,10 +5386,11 @@ server <- function(input, output, session) {
         class = "xruns-pp-overall",
         tags$div(class = paste("xruns-pp-overall-val", overall_cls), overall_sign),
         tags$div(class = "xruns-pp-overall-label", "Overall - runs/9 vs avg"),
-        downloadButton(
-          "download_player_card",
+        actionButton(
+          "download_player_card_client",
           tagList(tags$i(class = "fa-solid fa-image"), "Share Player Card"),
-          class = "xruns-share-btn xruns-share-btn-secondary"
+          class = "xruns-share-btn xruns-share-btn-secondary",
+          onclick = "xrunsDownloadClientShareCard('client_player_share_card')"
         )
       )
     )
@@ -5691,25 +5710,19 @@ server <- function(input, output, session) {
     )
   })
 
-  output$download_rankings_card <- downloadHandler(
-    filename = function() {
-      paste0("xruns-rankings-", current_year(), ".png")
-    },
-    content = function(file) {
-      tt <- current_team_tbl()
-      if (is.null(tt) || nrow(tt) == 0) {
-        stop("Team rankings are not available for this view.", call. = FALSE)
-      }
-      card <- xruns_rankings_share_card(
+  output$client_rankings_share_card <- renderUI({
+    tt <- current_team_tbl()
+    if (is.null(tt) || nrow(tt) == 0) return(NULL)
+    tags$div(
+      `data-filename` = paste0("xruns-rankings-", current_year(), ".png"),
+      xruns_rankings_share_card(
         tt = tt,
         season = current_year(),
         base_url = xruns_current_base_url(session),
         data_label = current_share_data_label()
       )
-      xruns_render_share_png(card, file)
-    },
-    contentType = "image/png"
-  )
+    )
+  })
   
   # ---- Headings ----
   output$team_heading    <- renderText(sprintf("%s Team Efficiency Ratings", current_year()))
@@ -6510,20 +6523,19 @@ server <- function(input, output, session) {
   output$mp_share_button <- renderUI({
     res <- mp_result()
     if (is.null(res)) return(NULL)
-    downloadButton(
-      "download_matchup_card",
+    actionButton(
+      "download_matchup_card_client",
       tagList(tags$i(class = "fa-solid fa-image"), "Share Matchup"),
-      class = "xruns-share-btn xruns-share-btn-secondary"
+      class = "xruns-share-btn xruns-share-btn-secondary",
+      onclick = "xrunsDownloadClientShareCard('client_matchup_share_card')"
     )
   })
 
-  output$download_matchup_card <- downloadHandler(
-    filename = function() {
-      res <- mp_result()
-      if (is.null(res)) {
-        return(paste0("xruns-matchup-", current_year(), ".png"))
-      }
-      paste0(
+  output$client_matchup_share_card <- renderUI({
+    res <- mp_result()
+    if (is.null(res)) return(NULL)
+    tags$div(
+      `data-filename` = paste0(
         "xruns-matchup-",
         xruns_slug(res$ta$abbrev),
         "-vs-",
@@ -6531,23 +6543,15 @@ server <- function(input, output, session) {
         "-",
         current_year(),
         ".png"
-      )
-    },
-    content = function(file) {
-      res <- mp_result()
-      if (is.null(res)) {
-        stop("Generate a matchup before downloading a share card.", call. = FALSE)
-      }
-      card <- xruns_matchup_share_card(
+      ),
+      xruns_matchup_share_card(
         res = res,
         season = current_year(),
         base_url = xruns_current_base_url(session),
         data_label = current_share_data_label()
       )
-      xruns_render_share_png(card, file)
-    },
-    contentType = "image/png"
-  )
+    )
+  })
   
   # Renders the full results panel (header, expected runs, win bar, pitchers, scores).
   mp_team_color <- function(row, fallback = "#151922") {
@@ -6924,40 +6928,32 @@ server <- function(input, output, session) {
     row[1, ]
   })
 
-  output$download_team_card <- downloadHandler(
-    filename = function() {
-      row <- selected_team_row()
-      team <- if (is.null(row) || nrow(row) == 0) "team" else xruns_slug(row$abbrev)
-      paste0("xruns-team-", team, "-", current_year(), ".png")
-    },
-    content = function(file) {
-      row <- selected_team_row()
-      tt <- current_team_tbl()
-      if (is.null(row) || nrow(row) == 0) {
-        stop("Select a team before downloading a share card.", call. = FALSE)
-      }
-      rank_for <- function(metric) {
-        rank_val <- which(dplyr::arrange(tt, dplyr::desc(.data[[metric]]))$abbrev == row$abbrev[1])
-        if (length(rank_val) == 0) NA_integer_ else rank_val
-      }
-      ranks <- list(
-        overall = rank_for("overall"),
-        offense = rank_for("off_rating"),
-        pitching = rank_for("def_pitching"),
-        fielding = rank_for("def_fld")
-      )
-      if (is.na(ranks$overall)) ranks$overall <- row$rank[1]
-      card <- xruns_team_share_card(
+  output$client_team_share_card <- renderUI({
+    row <- selected_team_row()
+    tt <- current_team_tbl()
+    if (is.null(row) || nrow(row) == 0) return(NULL)
+    rank_for <- function(metric) {
+      rank_val <- which(dplyr::arrange(tt, dplyr::desc(.data[[metric]]))$abbrev == row$abbrev[1])
+      if (length(rank_val) == 0) NA_integer_ else rank_val
+    }
+    ranks <- list(
+      overall = rank_for("overall"),
+      offense = rank_for("off_rating"),
+      pitching = rank_for("def_pitching"),
+      fielding = rank_for("def_fld")
+    )
+    if (is.na(ranks$overall)) ranks$overall <- row$rank[1]
+    tags$div(
+      `data-filename` = paste0("xruns-team-", xruns_slug(row$abbrev), "-", current_year(), ".png"),
+      xruns_team_share_card(
         row = row,
         ranks = ranks,
         season = current_year(),
         base_url = xruns_current_base_url(session),
         data_label = current_share_data_label()
       )
-      xruns_render_share_png(card, file)
-    },
-    contentType = "image/png"
-  )
+    )
+  })
 
   # Reactive: player view filtered to the selected team
   selected_team_players <- reactive({
