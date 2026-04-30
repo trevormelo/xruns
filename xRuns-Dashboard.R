@@ -1937,6 +1937,8 @@ custom_css <- HTML("
     margin-left: auto;
     text-align: right;
     flex-shrink: 0;
+    align-self: flex-start;
+    padding-top: 3px;
   }
   .xruns-pp-overall-val {
     font-size: 2rem;
@@ -1952,6 +1954,9 @@ custom_css <- HTML("
     color: rgba(255,255,255,0.45);
     margin-top: 3px;
   }
+  .xruns-pp-overall .xruns-share-btn {
+    margin-top: 13px;
+  }
   /* (back button removed — player profile is now a standalone page) */
 
   /* ---- Mobile / narrow-screen responsive overrides ---- */
@@ -1959,19 +1964,76 @@ custom_css <- HTML("
   /* Player profile header: stack vertically below 600px */
   @media (max-width: 600px) {
     .xruns-pp-header {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 12px;
-      padding: 18px 18px 20px;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 12px 14px;
+      padding: 16px;
+    }
+    .xruns-pp-avatar-wrap {
+      width: 72px;
+      height: 72px;
     }
     .xruns-pp-overall {
       margin-left: 0;
       text-align: left;
+      width: 100%;
+      padding-top: 0;
     }
-    .xruns-pp-name { font-size: 1.2rem; }
+    .xruns-pp-name { font-size: 1.12rem; }
     .xruns-pp-overall-val { font-size: 1.5rem; }
+    .xruns-pp-overall .xruns-share-btn {
+      width: 100%;
+      margin-top: 10px;
+    }
     .xruns-pp-grid {
       grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .xruns-pp-header {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      align-items: start;
+      gap: 14px 16px;
+      padding: 18px;
+      margin-left: 0;
+      margin-right: 0;
+    }
+    .xruns-pp-avatar-wrap {
+      width: 86px;
+      height: 86px;
+    }
+    .xruns-pp-header > div:nth-child(2) {
+      min-width: 0;
+      grid-column: 2;
+    }
+    .xruns-pp-name {
+      font-size: 1.25rem;
+      overflow-wrap: anywhere;
+    }
+    .xruns-pp-meta {
+      flex-wrap: wrap;
+      line-height: 1.35;
+    }
+    .xruns-pp-overall {
+      margin-left: 0;
+      text-align: left;
+      grid-column: 1 / -1;
+      width: 100%;
+      padding-top: 0;
+    }
+    .xruns-pp-overall-label {
+      margin-top: 1px;
+    }
+    .xruns-pp-overall-val {
+      font-size: 1.85rem;
+    }
+    .xruns-pp-overall .xruns-share-btn {
+      width: 100%;
+      margin-top: 10px;
+    }
+    .xruns-pp-grid {
+      grid-template-columns: 1fr !important;
     }
   }
 
@@ -2609,6 +2671,7 @@ product_css <- HTML("
     min-height: 64px;
     padding: 0 18px !important;
     position: relative;
+    z-index: 10020;
   }
   /* Stretch navbar content full width so tabs anchor to the right edge */
   .navbar > .container,
@@ -2740,6 +2803,18 @@ product_css <- HTML("
     }
   }
   @media (max-width: 991px) {
+    .navbar {
+      overflow: visible !important;
+    }
+    .navbar > .container,
+    .navbar > .container-fluid,
+    .navbar > .container-sm,
+    .navbar > .container-md,
+    .navbar > .container-lg,
+    .navbar > .container-xl {
+      position: relative;
+      overflow: visible !important;
+    }
     .navbar .navbar-toggler,
     .navbar .navbar-toggle,
     .navbar-toggler,
@@ -2751,8 +2826,72 @@ product_css <- HTML("
       cursor: pointer !important;
     }
     .navbar-collapse {
-      position: static !important;
-      transform: none !important;
+      position: absolute !important;
+      top: calc(100% + 10px) !important;
+      left: 12px !important;
+      right: 12px !important;
+      width: auto !important;
+      max-width: 680px;
+      margin-left: auto !important;
+      margin-right: auto !important;
+      display: block !important;
+      visibility: visible !important;
+      height: auto !important;
+      max-height: min(72vh, 440px);
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      padding: 10px !important;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 14px;
+      background: rgba(21, 25, 34, 0.86) !important;
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      backdrop-filter: blur(18px) saturate(140%);
+      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.34);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-10px) scale(0.98) !important;
+      transform-origin: top center;
+      transition:
+        opacity 180ms ease,
+        transform 180ms ease;
+      z-index: 10030;
+    }
+    .navbar-collapse.show,
+    .navbar-collapse.collapsing {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0) scale(1) !important;
+    }
+    .navbar-nav {
+      float: none !important;
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 4px !important;
+      margin: 0 !important;
+      width: 100%;
+    }
+    .navbar-nav .nav-link {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 12px 14px !important;
+      border-radius: 10px;
+      font-size: 1rem !important;
+      line-height: 1.15;
+      color: rgba(255, 255, 255, 0.72) !important;
+      transition:
+        background 140ms ease,
+        color 140ms ease,
+        transform 140ms ease;
+    }
+    .navbar-nav .nav-link:hover {
+      background: rgba(255, 255, 255, 0.10);
+      transform: translateX(2px);
+    }
+    .navbar-nav .nav-link.active {
+      color: #ffffff !important;
+      background: rgba(255, 255, 255, 0.15);
+      box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.72);
     }
     .navbar-brand .brand-sub {
       display: inline !important;
@@ -2761,6 +2900,21 @@ product_css <- HTML("
     }
     .navbar-brand {
       gap: 7px;
+    }
+  }
+  @media (max-width: 520px) {
+    .navbar {
+      padding-left: 14px !important;
+      padding-right: 14px !important;
+    }
+    .navbar-collapse {
+      left: 2px !important;
+      right: 2px !important;
+      border-radius: 12px;
+    }
+    .navbar-nav .nav-link {
+      padding: 11px 12px !important;
+      font-size: 0.95rem !important;
     }
   }
   .navbar-toggler:hover,
@@ -3000,6 +3154,62 @@ product_css <- HTML("
     white-space: normal;
     line-height: 1.2;
     min-width: 240px;
+  }
+  .xruns-share-row {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin: 8px 0 10px 0;
+  }
+  .xruns-share-btn,
+  .xruns-share-btn:visited {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    max-width: 100%;
+    min-height: 38px;
+    padding: 8px 13px !important;
+    border-radius: 6px !important;
+    background: #1a365d !important;
+    border: 1px solid #1a365d !important;
+    color: #ffffff !important;
+    font-size: 0.78rem !important;
+    font-weight: 820 !important;
+    line-height: 1.2 !important;
+    white-space: normal !important;
+    text-decoration: none !important;
+    box-shadow: 0 8px 18px rgba(26, 54, 93, 0.16);
+  }
+  .xruns-share-btn:hover,
+  .xruns-share-btn:focus {
+    background: #142a49 !important;
+    border-color: #142a49 !important;
+    color: #ffffff !important;
+    text-decoration: none !important;
+  }
+  .xruns-share-btn-secondary,
+  .xruns-share-btn-secondary:visited {
+    background: #ffffff !important;
+    border-color: #cfd6e2 !important;
+    color: #1a365d !important;
+    box-shadow: none;
+  }
+  .xruns-share-btn-secondary:hover,
+  .xruns-share-btn-secondary:focus {
+    background: #f2f4f8 !important;
+    border-color: #98a2b3 !important;
+    color: #1a365d !important;
+  }
+  .xruns-share-inline {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .xruns-share-inline .xruns-share-btn {
+    box-shadow: none;
+  }
+  .xruns-pp-inline-share {
+    margin-top: 10px;
   }
   .xruns-season-chip .form-select,
   .xruns-season-chip .form-control,
@@ -3273,11 +3483,973 @@ product_css <- HTML("
     .kpi-row { display: none !important; }
     .xruns-heading-row { align-items: flex-start; }
     .xruns-heading-text { min-width: 100%; }
+    .xruns-share-inline {
+      width: 100%;
+      margin-left: 0 !important;
+    }
+    .xruns-share-inline .xruns-share-btn {
+      width: 100%;
+    }
+    .xruns-action-row {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+    .xruns-action-row .btn,
+    .xruns-action-row .xruns-share-btn {
+      width: min(100%, 300px);
+      min-width: 0 !important;
+    }
+    #download_team_card,
+    #download_rankings_card,
+    #download_matchup_card,
+    #download_player_card {
+      width: 100%;
+    }
     .xruns-period-group { flex-wrap: wrap; }
     .tab-body { padding: 12px 10px 18px 10px; }
     .mp-selectors-row { padding: 0; gap: 8px; }
   }
+  @media (max-width: 820px) {
+    .mp-selectors-row {
+      flex-direction: column !important;
+      padding: 0 !important;
+      gap: 10px !important;
+    }
+    .mp-selector-card {
+      width: 100% !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 12px !important;
+      padding: 12px !important;
+    }
+    .mp-selector-card > .mp-team-logo-lg,
+    .mp-selector-card > .mp-placeholder-lg {
+      width: 56px !important;
+      height: 56px !important;
+      flex: 0 0 56px !important;
+      margin-top: 0 !important;
+    }
+    .mp-card-inputs {
+      min-width: 0 !important;
+      flex: 1 1 auto !important;
+    }
+    .mp-sub-label {
+      font-size: 0.68rem !important;
+      line-height: 1.1 !important;
+      margin-bottom: 3px !important;
+    }
+    .mp-selector-card .form-select,
+    .mp-selector-card .form-control,
+    .mp-card-inputs .selectize-input,
+    #mp_starter_a .selectize-input,
+    #mp_starter_b .selectize-input {
+      min-height: 38px !important;
+      padding: 7px 34px 7px 10px !important;
+      font-size: 0.92rem !important;
+      line-height: 1.25 !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+    .mp-vs-divider {
+      width: 100% !important;
+      min-width: 0 !important;
+      padding: 6px 0 !important;
+      margin: 0 !important;
+      border-top: 1px solid #e2e8f0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .mp-results-wrap {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+    .mp-header-row {
+      flex-direction: column !important;
+      justify-content: center !important;
+      gap: 16px !important;
+      padding: 14px 12px !important;
+      overflow: hidden !important;
+    }
+    .mp-team-block {
+      width: 100% !important;
+      min-width: 0 !important;
+    }
+    .mp-team-name-lg {
+      max-width: 100% !important;
+      font-size: 1rem !important;
+      line-height: 1.2 !important;
+      overflow-wrap: anywhere !important;
+    }
+    .mp-exp-runs {
+      font-size: 2.4rem !important;
+    }
+    .mp-score-row {
+      grid-template-columns: 1fr !important;
+      gap: 6px !important;
+      align-items: flex-start !important;
+    }
+    .mp-score-label {
+      font-size: 0.92rem !important;
+      white-space: normal !important;
+    }
+    .mp-win-seg {
+      font-size: 0.78rem !important;
+      padding: 0 4px !important;
+      white-space: nowrap !important;
+    }
+    .tb-header-card {
+      display: grid !important;
+      grid-template-columns: 72px minmax(0, 1fr) !important;
+      align-items: center !important;
+      gap: 14px !important;
+      padding: 18px !important;
+    }
+    .tb-header-logo img,
+    .tb-header-logo > div {
+      width: 64px !important;
+      height: 64px !important;
+    }
+    .tb-header-title {
+      min-width: 0 !important;
+    }
+    .tb-header-title > div:first-child {
+      font-size: 1.35rem !important;
+      overflow-wrap: anywhere !important;
+    }
+    .tb-rating-pills {
+      grid-column: 1 / -1 !important;
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      gap: 8px !important;
+      width: 100% !important;
+    }
+    .tb-rating-pill {
+      min-width: 0 !important;
+      padding: 10px 8px !important;
+    }
+    .tb-rating-pill .tb-pill-value {
+      font-size: 1.18rem !important;
+    }
+  }
+  @media (max-width: 520px) {
+    .tb-rating-pills {
+      grid-template-columns: 1fr !important;
+    }
+  }
 ")
+
+# ---- Share card helpers ------------------------------------------------------
+xruns_safe_text <- function(x, fallback = "") {
+  if (is.null(x) || length(x) == 0 || is.na(x[1])) return(fallback)
+  as.character(x[1])
+}
+
+xruns_fmt_signed <- function(x, digits = 2) {
+  if (is.null(x) || length(x) == 0 || is.na(x[1]) || !is.finite(x[1])) return("N/A")
+  sprintf(paste0("%+.", digits, "f"), x[1])
+}
+
+xruns_slug <- function(x) {
+  slug <- tolower(gsub("[^A-Za-z0-9]+", "-", xruns_safe_text(x, "xruns")))
+  slug <- gsub("(^-+|-+$)", "", slug)
+  if (nzchar(slug)) slug else "xruns"
+}
+
+xruns_rating_color <- function(x) {
+  if (is.null(x) || length(x) == 0 || is.na(x[1]) || !is.finite(x[1])) return("#64748b")
+  if (x[1] > 0.01) "#047857" else if (x[1] < -0.01) "#b91c1c" else "#64748b"
+}
+
+xruns_team_color <- function(row, fallback = "#1a365d") {
+  col <- if ("team_color" %in% names(row)) xruns_safe_text(row$team_color, fallback = NA_character_) else NA_character_
+  if ((is.na(col) || !grepl("^#[0-9A-Fa-f]{6}$", col)) && "abbrev" %in% names(row)) {
+    idx <- match(row$abbrev[1], TEAM_META$abbrev)
+    if (!is.na(idx) && "team_color" %in% names(TEAM_META)) {
+      col <- xruns_safe_text(TEAM_META$team_color[idx], fallback = NA_character_)
+    }
+  }
+  if (is.na(col) || !grepl("^#[0-9A-Fa-f]{6}$", col)) fallback else col
+}
+
+xruns_headshot_url <- function(player_id, width = 220) {
+  sprintf(
+    "https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_%d,q_auto:best/v1/people/%d/headshot/67/current",
+    width,
+    as.integer(player_id)
+  )
+}
+
+xruns_current_base_url <- function(session) {
+  protocol <- session$clientData$url_protocol %||% "https:"
+  host     <- session$clientData$url_hostname %||% "xruns"
+  port     <- session$clientData$url_port %||% ""
+  path     <- session$clientData$url_pathname %||% "/"
+  port_part <- if (nzchar(port) && !(port %in% c("80", "443"))) paste0(":", port) else ""
+  paste0(protocol, "//", host, port_part, path)
+}
+
+xruns_file_url <- function(path) {
+  paste0(
+    "file://",
+    utils::URLencode(normalizePath(path, winslash = "/", mustWork = TRUE), reserved = FALSE)
+  )
+}
+
+xruns_share_card_css <- function() {
+'
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    color: #1e293b;
+    font-family: Inter, Arial, sans-serif;
+  }
+  body { padding: 28px; }
+  .xruns-share-card {
+    width: 1200px;
+    min-height: 630px;
+    position: relative;
+    overflow: hidden;
+    background: #ffffff;
+    border: 1px solid #dbe3ef;
+    border-radius: 18px;
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.16);
+  }
+  .xruns-share-band {
+    background: #1a365d;
+    color: #ffffff;
+    padding: 34px 42px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 26px;
+  }
+  .xruns-share-brand {
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+  .xruns-share-kicker {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 16px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.13em;
+    margin-top: 5px;
+  }
+  .xruns-share-title {
+    color: #ffffff;
+    font-size: 54px;
+    font-weight: 900;
+    line-height: 1.02;
+    letter-spacing: 0;
+    margin-top: 8px;
+  }
+  .xruns-share-meta {
+    color: rgba(255, 255, 255, 0.74);
+    font-size: 22px;
+    font-weight: 650;
+    margin-top: 10px;
+  }
+  .xruns-share-logo {
+    width: 118px;
+    height: 118px;
+    object-fit: contain;
+    flex: 0 0 auto;
+  }
+  .xruns-share-headshot {
+    width: 132px;
+    height: 132px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #e2e8f0;
+    border: 4px solid rgba(255, 255, 255, 0.30);
+    flex: 0 0 auto;
+  }
+  .xruns-share-body {
+    padding: 34px 42px 74px;
+    display: grid;
+    grid-template-columns: 0.92fr 1.08fr;
+    gap: 34px;
+  }
+  .xruns-share-stat {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 24px 26px;
+  }
+  .xruns-share-label {
+    color: #64748b;
+    font-size: 16px;
+    font-weight: 850;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+  }
+  .xruns-share-big {
+    font-size: 88px;
+    line-height: 0.95;
+    font-weight: 900;
+    letter-spacing: 0;
+    margin-top: 14px;
+  }
+  .xruns-share-sub {
+    color: #64748b;
+    font-size: 19px;
+    font-weight: 650;
+    line-height: 1.38;
+    margin-top: 14px;
+  }
+  .xruns-share-pills {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .xruns-share-pill {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .xruns-share-pill-value {
+    font-size: 37px;
+    font-weight: 900;
+    line-height: 1;
+    margin-top: 8px;
+  }
+  .xruns-share-bars {
+    display: grid;
+    gap: 16px;
+  }
+  .xruns-player-component-bars {
+    margin-top: 22px;
+    gap: 20px;
+  }
+  .xruns-share-bar-row {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr) 82px;
+    gap: 14px;
+    align-items: center;
+  }
+  .xruns-share-bar-name {
+    color: #334155;
+    font-size: 19px;
+    font-weight: 800;
+  }
+  .xruns-share-bar-track {
+    position: relative;
+    height: 18px;
+    background: #e8edf4;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .xruns-share-bar-fill {
+    height: 100%;
+    min-width: 3px;
+    border-radius: 999px;
+  }
+  .xruns-share-bar-value {
+    font-size: 20px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .xruns-player-component-row {
+    grid-template-columns: 150px minmax(0, 1fr) 86px;
+  }
+  .xruns-player-pct-track {
+    overflow: visible;
+  }
+  .xruns-player-pct-badge {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 48px;
+    height: 34px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 4px solid #ffffff;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
+  }
+  .xruns-player-component-value {
+    font-size: 19px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .xruns-rank-list {
+    display: grid;
+    gap: 10px;
+  }
+  .xruns-rank-row {
+    display: grid;
+    grid-template-columns: 54px 42px minmax(0, 1fr) 92px;
+    gap: 14px;
+    align-items: center;
+    min-height: 56px;
+    padding: 8px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #f8fafc;
+  }
+  .xruns-rank-num {
+    color: #64748b;
+    font-size: 18px;
+    font-weight: 900;
+  }
+  .xruns-rank-logo {
+    width: 34px;
+    height: 34px;
+    object-fit: contain;
+  }
+  .xruns-rank-team {
+    color: #1e293b;
+    font-size: 20px;
+    font-weight: 850;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .xruns-rank-value {
+    font-size: 22px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .xruns-matchup-teams {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex: 0 0 auto;
+  }
+  .xruns-matchup-team {
+    width: 180px;
+    text-align: center;
+  }
+  .xruns-matchup-logo {
+    width: 82px;
+    height: 82px;
+    object-fit: contain;
+    display: block;
+    margin: 0 auto 8px;
+  }
+  .xruns-matchup-name {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 900;
+    line-height: 1.12;
+  }
+  .xruns-matchup-vs {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 22px;
+    font-weight: 900;
+  }
+  .xruns-matchup-score {
+    color: #1a365d;
+    font-size: 62px;
+    font-weight: 900;
+    line-height: 1;
+    margin-top: 16px;
+  }
+  .xruns-matchup-expected {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .xruns-matchup-exp-value {
+    color: #1a365d;
+    font-size: 42px;
+    font-weight: 900;
+    line-height: 1;
+    margin-top: 8px;
+  }
+  .xruns-matchup-score-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .xruns-matchup-score-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 76px;
+    align-items: center;
+    gap: 12px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .xruns-matchup-score-main {
+    color: #1e293b;
+    font-size: 26px;
+    font-weight: 900;
+    line-height: 1;
+  }
+  .xruns-matchup-score-prob {
+    color: #64748b;
+    font-size: 17px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .xruns-matchup-pitchers {
+    display: grid;
+    gap: 13px;
+    margin-top: 18px;
+  }
+  .xruns-matchup-pitcher {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .xruns-matchup-pitcher-name {
+    color: #1e293b;
+    font-size: 21px;
+    font-weight: 900;
+    line-height: 1.1;
+    margin-top: 5px;
+  }
+  .xruns-matchup-prob {
+    margin-top: 18px;
+  }
+  .xruns-matchup-prob-track {
+    display: flex;
+    height: 44px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #e2e8f0;
+    margin-top: 12px;
+  }
+  .xruns-matchup-prob-fill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-size: 17px;
+    font-weight: 900;
+    min-width: 0;
+  }
+  .xruns-share-watermark {
+    position: absolute;
+    left: 42px;
+    right: 42px;
+    bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    color: #94a3b8;
+    font-size: 15px;
+    font-weight: 750;
+  }
+'
+}
+
+xruns_share_bar_rows <- function(labels, values) {
+  values <- as.numeric(values)
+  finite_vals <- values[is.finite(values)]
+  max_abs <- if (length(finite_vals) == 0) 1 else max(abs(finite_vals), 1)
+  lapply(seq_along(labels), function(i) {
+    value <- values[i]
+    width <- if (is.finite(value)) min(abs(value) / max_abs * 100, 100) else 0
+    color <- xruns_rating_color(value)
+    tags$div(
+      class = "xruns-share-bar-row",
+      tags$div(class = "xruns-share-bar-name", labels[i]),
+      tags$div(
+        class = "xruns-share-bar-track",
+        tags$div(
+          class = "xruns-share-bar-fill",
+          style = sprintf("width: %.1f%%; background: %s;", width, color)
+        )
+      ),
+      tags$div(
+        class = "xruns-share-bar-value",
+        style = sprintf("color: %s;", color),
+        xruns_fmt_signed(value)
+      )
+    )
+  })
+}
+
+xruns_ordinal <- function(x) {
+  if (is.na(x)) return("N/A")
+  suffix <- if (x %% 100 %in% 11:13) {
+    "th"
+  } else {
+    switch(as.character(x %% 10), "1" = "st", "2" = "nd", "3" = "rd", "th")
+  }
+  paste0(x, suffix)
+}
+
+xruns_player_component_rows <- function(components) {
+  rows <- Filter(function(x) !is.null(x$pct) && !is.na(x$pct), components)
+  lapply(rows, function(x) {
+    color <- if (x$pct < 40) "#b91c1c" else "#047857"
+    value_color <- xruns_rating_color(x$value)
+    tags$div(
+      class = "xruns-share-bar-row xruns-player-component-row",
+      tags$div(class = "xruns-share-bar-name", x$label),
+      tags$div(
+        class = "xruns-share-bar-track xruns-player-pct-track",
+        tags$div(
+          class = "xruns-share-bar-fill",
+          style = sprintf("width: %d%%; background: %s;", x$pct, color)
+        ),
+        tags$div(
+          class = "xruns-player-pct-badge",
+          style = sprintf("left: %d%%; background: %s;", x$pct, color),
+          xruns_ordinal(x$pct)
+        )
+      ),
+      tags$div(
+        class = "xruns-player-component-value",
+        style = sprintf("color: %s;", value_color),
+        xruns_fmt_signed(x$value)
+      )
+    )
+  })
+}
+
+xruns_watermark <- function(season, base_url) {
+  tags$div(
+    class = "xruns-share-watermark",
+    tags$span(paste0("xRuns ", season)),
+    tags$span(xruns_safe_text(base_url, "xruns"))
+  )
+}
+
+xruns_player_share_card <- function(row, season, base_url) {
+  role <- xruns_safe_text(row$Role)
+  role_display <- switch(role,
+    "Player" = "Two-Way Player",
+    "Hitter" = "Hitter",
+    "Pitcher" = "Pitcher",
+    role
+  )
+  overall <- as.numeric(row$Overall[1])
+  pct_value <- if (role %in% c("Hitter", "Player")) {
+    pct_rank(overall, pp_hitter_overalls)
+  } else {
+    pct_rank(overall, pp_pitcher_overalls)
+  }
+  pct_text <- if (is.na(pct_value)) "Percentile unavailable" else paste0(pct_value, "th percentile")
+  component_rows <- list(
+    list(label = "Hitting", value = row$Hitting[1], pct = pct_rank(row$Hitting[1], pp_hitter_hitting)),
+    list(label = "Baserunning", value = row$Baserunning[1], pct = pct_rank(row$Baserunning[1], pp_hitter_br)),
+    list(label = "Pitching", value = row$Pitching[1], pct = pct_rank(row$Pitching[1], pp_pitcher_pitching)),
+    list(label = "Fielding", value = row$Fielding[1], pct = pct_rank(row$Fielding[1], pp_fielding_all))
+  )
+  team_abbrev <- xruns_safe_text(row$Team)
+
+  tags$div(
+    class = "xruns-share-card xruns-player-share-card",
+    tags$div(
+      class = "xruns-share-band",
+      tags$div(
+        tags$div(class = "xruns-share-brand", "xRuns"),
+        tags$div(class = "xruns-share-kicker", "Player Efficiency Card"),
+        tags$div(class = "xruns-share-title", xruns_safe_text(row$Player)),
+        tags$div(class = "xruns-share-meta", paste(team_abbrev, role_display, sep = " | "))
+      ),
+      tags$img(
+        class = "xruns-share-headshot",
+        src = xruns_headshot_url(row$player_id[1], width = 260),
+        alt = xruns_safe_text(row$Player)
+      )
+    ),
+    tags$div(
+      class = "xruns-share-body",
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Overall Rating"),
+        tags$div(
+          class = "xruns-share-big",
+          style = sprintf("color: %s;", xruns_rating_color(overall)),
+          xruns_fmt_signed(overall)
+        ),
+        tags$div(class = "xruns-share-sub", paste0(pct_text, " in ", season)),
+        tags$div(class = "xruns-share-sub", "Runs per 9 innings vs average")
+      ),
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Component Percentiles"),
+        tags$div(
+          class = "xruns-share-bars xruns-player-component-bars",
+          tagList(xruns_player_component_rows(component_rows))
+        )
+      )
+    ),
+    xruns_watermark(season, base_url)
+  )
+}
+
+xruns_team_share_card <- function(row, ranks, season, base_url) {
+  logo_url <- xruns_safe_text(row$team_logo_espn, fallback = "")
+  ratings <- list(
+    list("Overall", row$overall[1], ranks$overall),
+    list("Offense", row$off_rating[1], ranks$offense),
+    list("Pitching", row$def_pitching[1], ranks$pitching),
+    list("Fielding", row$def_fld[1], ranks$fielding)
+  )
+  pills <- lapply(ratings, function(x) {
+    tags$div(
+      class = "xruns-share-pill",
+      tags$div(class = "xruns-share-label", x[[1]]),
+      tags$div(
+        class = "xruns-share-pill-value",
+        style = sprintf("color: %s;", xruns_rating_color(x[[2]])),
+        xruns_fmt_signed(x[[2]])
+      ),
+      tags$div(class = "xruns-share-sub", paste0("Rank #", x[[3]], " of 30"))
+    )
+  })
+
+  tags$div(
+    class = "xruns-share-card xruns-team-share-card",
+    tags$div(
+      class = "xruns-share-band",
+      tags$div(
+        tags$div(class = "xruns-share-brand", "xRuns"),
+        tags$div(class = "xruns-share-kicker", "Team Efficiency Card"),
+        tags$div(class = "xruns-share-title", xruns_safe_text(row$team_name)),
+        tags$div(class = "xruns-share-meta", paste0("Overall rank #", ranks$overall, " of 30 | ", season))
+      ),
+      if (nzchar(logo_url)) {
+        tags$img(class = "xruns-share-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+      }
+    ),
+    tags$div(
+      class = "xruns-share-body",
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Current Rank"),
+        tags$div(class = "xruns-share-big", style = "color: #1a365d;", paste0("#", ranks$overall)),
+        tags$div(class = "xruns-share-sub", paste0(xruns_safe_text(row$abbrev), " by overall team rating"))
+      ),
+      tags$div(class = "xruns-share-pills", tagList(pills))
+    ),
+    xruns_watermark(season, base_url)
+  )
+}
+
+xruns_rankings_share_card <- function(tt, season, base_url) {
+  top <- tt %>%
+    dplyr::arrange(dplyr::desc(overall)) %>%
+    dplyr::slice_head(n = 5)
+  rank_rows <- lapply(seq_len(nrow(top)), function(i) {
+    row <- top[i, ]
+    logo_url <- xruns_safe_text(row$team_logo_espn, fallback = "")
+    tags$div(
+      class = "xruns-rank-row",
+      tags$div(class = "xruns-rank-num", paste0("#", i)),
+      if (nzchar(logo_url)) {
+        tags$img(class = "xruns-rank-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+      } else {
+        tags$div(class = "xruns-rank-logo")
+      },
+      tags$div(class = "xruns-rank-team", xruns_safe_text(row$team_name)),
+      tags$div(
+        class = "xruns-rank-value",
+        style = sprintf("color: %s;", xruns_rating_color(row$overall[1])),
+        xruns_fmt_signed(row$overall[1])
+      )
+    )
+  })
+  leader <- function(label, metric) {
+    row <- tt[which.max(tt[[metric]]), ]
+    tags$div(
+      class = "xruns-share-pill",
+      tags$div(class = "xruns-share-label", label),
+      tags$div(class = "xruns-share-pill-value", style = "color: #1a365d;", xruns_safe_text(row$abbrev)),
+      tags$div(class = "xruns-share-sub", xruns_fmt_signed(row[[metric]][1]))
+    )
+  }
+
+  tags$div(
+    class = "xruns-share-card xruns-rankings-share-card",
+    tags$div(
+      class = "xruns-share-band",
+      tags$div(
+        tags$div(class = "xruns-share-brand", "xRuns"),
+        tags$div(class = "xruns-share-kicker", "MLB Efficiency Rankings"),
+        tags$div(class = "xruns-share-title", paste0(season, " Team Rankings")),
+        tags$div(class = "xruns-share-meta", "Runs per game above a league-average team")
+      )
+    ),
+    tags$div(
+      class = "xruns-share-body",
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Top Overall"),
+        tags$div(class = "xruns-rank-list", tagList(rank_rows))
+      ),
+      tags$div(
+        class = "xruns-share-pills",
+        leader("Best Overall", "overall"),
+        leader("Best Offense", "off_rating"),
+        leader("Best Pitching", "def_pitching"),
+        leader("Best Fielding", "def_fld")
+      )
+    ),
+    xruns_watermark(season, base_url)
+  )
+}
+
+xruns_matchup_share_card <- function(res, season, base_url) {
+  ta <- res$ta
+  tb <- res$tb
+  top_score <- res$top_scores[1, ]
+  col_a <- xruns_team_color(ta)
+  col_b <- xruns_team_color(tb, "#334155")
+  logo_a <- xruns_safe_text(ta$team_logo_espn, fallback = "")
+  logo_b <- xruns_safe_text(tb$team_logo_espn, fallback = "")
+  pct_a <- round(res$p_a_wins * 100, 1)
+  pct_b <- round(100 - pct_a, 1)
+
+  team_block <- function(row, logo_url) {
+    tags$div(
+      class = "xruns-matchup-team",
+      if (nzchar(logo_url)) {
+        tags$img(class = "xruns-matchup-logo", src = logo_url, alt = xruns_safe_text(row$abbrev))
+      },
+      tags$div(class = "xruns-matchup-name", xruns_safe_text(row$team_name))
+    )
+  }
+
+  expected_pill <- function(abbrev, value, color) {
+    tags$div(
+      class = "xruns-share-pill",
+      tags$div(class = "xruns-share-label", paste(abbrev, "Expected Runs")),
+      tags$div(class = "xruns-matchup-exp-value", style = sprintf("color: %s;", color), sprintf("%.2f", value))
+    )
+  }
+
+  score_rows <- lapply(seq_len(min(3, nrow(res$top_scores))), function(i) {
+    score <- res$top_scores[i, ]
+    tags$div(
+      class = "xruns-matchup-score-row",
+      tags$div(
+        class = "xruns-matchup-score-main",
+        sprintf(
+          "%s %d - %d %s",
+          xruns_safe_text(ta$abbrev),
+          score$runs_a,
+          score$runs_b,
+          xruns_safe_text(tb$abbrev)
+        )
+      ),
+      tags$div(class = "xruns-matchup-score-prob", sprintf("%.1f%%", score$prob * 100))
+    )
+  })
+
+  pitcher_row <- function(abbrev, pitcher, color) {
+    tags$div(
+      class = "xruns-matchup-pitcher",
+      style = sprintf("border-left: 5px solid %s;", color),
+      tags$div(class = "xruns-share-label", paste(abbrev, "Starter")),
+      tags$div(class = "xruns-matchup-pitcher-name", xruns_safe_text(pitcher$player)),
+      tags$div(class = "xruns-share-sub", sprintf("Pitching value: %+.2f runs/game", pitcher$final_rating[1] * PA_PER_GAME))
+    )
+  }
+
+  tags$div(
+    class = "xruns-share-card xruns-matchup-share-card",
+    tags$div(
+      class = "xruns-share-band",
+      tags$div(
+        tags$div(class = "xruns-share-brand", "xRuns"),
+        tags$div(class = "xruns-share-kicker", "Matchup Simulator"),
+        tags$div(class = "xruns-share-title", paste0(xruns_safe_text(ta$abbrev), " vs ", xruns_safe_text(tb$abbrev))),
+        tags$div(class = "xruns-share-meta", paste0(season, " projected matchup"))
+      ),
+      tags$div(
+        class = "xruns-matchup-teams",
+        team_block(ta, logo_a),
+        tags$div(class = "xruns-matchup-vs", "VS"),
+        team_block(tb, logo_b)
+      )
+    ),
+    tags$div(
+      class = "xruns-share-body",
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Expected Runs"),
+        tags$div(
+          class = "xruns-matchup-expected",
+          expected_pill(xruns_safe_text(ta$abbrev), res$exp_a, col_a),
+          expected_pill(xruns_safe_text(tb$abbrev), res$exp_b, col_b)
+        ),
+        tags$div(
+          class = "xruns-matchup-score-list",
+          tags$div(class = "xruns-share-label", "Most Likely Final Scores"),
+          tagList(score_rows)
+        )
+      ),
+      tags$div(
+        class = "xruns-share-stat",
+        tags$div(class = "xruns-share-label", "Win Probability"),
+        tags$div(
+          class = "xruns-matchup-prob",
+          tags$div(
+            class = "xruns-matchup-prob-track",
+            tags$div(
+              class = "xruns-matchup-prob-fill",
+              style = sprintf("width: %.1f%%; background: %s;", pct_a, col_a),
+              paste0(xruns_safe_text(ta$abbrev), " ", pct_a, "%")
+            ),
+            tags$div(
+              class = "xruns-matchup-prob-fill",
+              style = sprintf("width: %.1f%%; background: %s;", pct_b, col_b),
+              paste0(xruns_safe_text(tb$abbrev), " ", pct_b, "%")
+            )
+          )
+        ),
+        tags$div(
+          class = "xruns-matchup-pitchers",
+          pitcher_row(xruns_safe_text(ta$abbrev), res$sa, col_a),
+          pitcher_row(xruns_safe_text(tb$abbrev), res$sb, col_b)
+        )
+      )
+    ),
+    xruns_watermark(season, base_url)
+  )
+}
+
+xruns_render_share_png <- function(card, file) {
+  if (!requireNamespace("webshot2", quietly = TRUE)) {
+    stop("The webshot2 package is required to create share images.", call. = FALSE)
+  }
+  html_file <- tempfile(fileext = ".html")
+  page <- tags$html(
+    tags$head(
+      tags$meta(charset = "utf-8"),
+      tags$link(rel = "preconnect", href = "https://fonts.googleapis.com"),
+      tags$link(rel = "preconnect", href = "https://fonts.gstatic.com", crossorigin = "anonymous"),
+      tags$link(
+        rel = "stylesheet",
+        href = "https://fonts.googleapis.com/css2?family=Inter:wght@500;650;750;800;850;900&display=swap"
+      ),
+      tags$style(HTML(xruns_share_card_css()))
+    ),
+    tags$body(card)
+  )
+  htmltools::save_html(page, file = html_file, background = "transparent")
+  on.exit(unlink(html_file), add = TRUE)
+  webshot2::webshot(
+    url = xruns_file_url(html_file),
+    file = file,
+    selector = ".xruns-share-card",
+    vwidth = 1300,
+    vheight = 760,
+    zoom = 2,
+    delay = 1
+  )
+}
 
 # ---- UI ----------------------------------------------------------------------
 ui <- page_navbar(
@@ -3354,9 +4526,10 @@ ui <- page_navbar(
           style.textContent = [
             '.navbar .navbar-toggler,.navbar .navbar-toggle{display:none!important;background:transparent!important;background-color:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;outline:0!important;}',
             '@media (max-width:991px){.navbar .navbar-toggler,.navbar .navbar-toggle{display:flex!important;width:52px!important;height:52px!important;min-width:52px!important;cursor:pointer!important;}}',
-            '@media (max-width:991px){.navbar-collapse{position:absolute;top:64px;left:0;right:0;background:rgba(21,25,34,0.97);padding:8px 16px 14px;z-index:9999;border-top:1px solid rgba(255,255,255,0.08);}}',
-            '@media (max-width:991px){.navbar-nav{flex-direction:column!important;gap:2px;}}',
-            '@media (max-width:991px){.navbar-collapse:not(.show){display:none!important;}}',
+            '@media (max-width:991px){.navbar{overflow:visible!important;z-index:10020!important;}.navbar>.container,.navbar>.container-fluid{position:relative;overflow:visible!important;}.navbar-collapse{position:absolute!important;top:calc(100% + 10px)!important;left:12px!important;right:12px!important;width:auto!important;max-width:680px;margin-left:auto!important;margin-right:auto!important;display:block!important;visibility:visible!important;height:auto!important;max-height:min(72vh,440px);overflow-y:auto!important;overflow-x:hidden!important;padding:10px!important;z-index:10030!important;border:1px solid rgba(255,255,255,0.13);border-radius:14px;background:rgba(21,25,34,0.86)!important;-webkit-backdrop-filter:blur(18px) saturate(140%);backdrop-filter:blur(18px) saturate(140%);box-shadow:0 24px 60px rgba(15,23,42,0.34);opacity:0!important;pointer-events:none!important;transform:translateY(-10px) scale(.98)!important;transform-origin:top center;transition:opacity 180ms ease,transform 180ms ease;}}',
+            '@media (max-width:991px){.navbar-collapse.show,.navbar-collapse.collapsing{opacity:1!important;pointer-events:auto!important;transform:translateY(0) scale(1)!important;}}',
+            '@media (max-width:991px){.navbar-nav{float:none!important;display:flex!important;flex-direction:column!important;gap:4px!important;margin:0!important;width:100%;}.navbar-nav .nav-link{display:block;width:100%;margin:0;padding:12px 14px!important;border-radius:10px;font-size:1rem!important;line-height:1.15;color:rgba(255,255,255,.72)!important;transition:background 140ms ease,color 140ms ease,transform 140ms ease;}.navbar-nav .nav-link:hover{background:rgba(255,255,255,.10)!important;transform:translateX(2px);}.navbar-nav .nav-link.active{color:#fff!important;background:rgba(255,255,255,.15)!important;box-shadow:inset 0 -2px 0 rgba(255,255,255,.72);}}',
+            '@media (max-width:520px){.navbar-collapse{left:2px!important;right:2px!important;border-radius:12px;}.navbar-nav .nav-link{padding:11px 12px!important;font-size:.95rem!important;}}',
             '.navbar .navbar-toggler-icon,.navbar .navbar-toggle .icon-bar{display:none!important;}',
             '.navbar .navbar-toggler:before,.navbar .navbar-toggle:before{content:\"\";display:block;width:27px;height:2px;background:#fff;border-radius:2px;box-shadow:0 8px 0 #fff,0 16px 0 #fff;}'
           ].join('\\n');
@@ -3410,7 +4583,15 @@ ui <- page_navbar(
                  textOutput("team_heading", inline = TRUE)
         ),
         uiOutput("time_period_ui"),
-        tags$div(class = "xruns-season-chip", season_picker_inline("team"))
+        tags$div(class = "xruns-season-chip", season_picker_inline("team")),
+        tags$div(
+          class = "xruns-share-inline",
+          downloadButton(
+            "download_rankings_card",
+            tagList(tags$i(class = "fa-solid fa-image"), "Share the Rankings"),
+            class = "xruns-share-btn"
+          )
+        )
       ),
       
       # Fallback / window note (shown when time period filter uses graceful fallback)
@@ -3564,10 +4745,11 @@ ui <- page_navbar(
       
       tags$div(
         class = "xruns-action-row",
-        style = "padding:6px 0 18px 0; display:flex; justify-content:center;",
+        style = "padding:6px 0 18px 0; display:flex; justify-content:center; align-items:center; gap:10px; flex-wrap:wrap;",
         actionButton("mp_predict", "Generate Matchup",
                      class = "btn btn-primary",
-                     style = "padding:9px 30px; font-size:13px; min-width:190px;")
+                     style = "padding:9px 30px; font-size:13px; min-width:190px;"),
+        uiOutput("mp_share_button")
       ),
       
       # ---- Results (rendered server-side) ----
@@ -3602,7 +4784,16 @@ ui <- page_navbar(
             selected = "LAD"
           )
         ),
-        tags$div(season_picker_inline("tb"))
+        tags$div(season_picker_inline("tb")),
+        tags$div(
+          class = "xruns-share-inline",
+          style = "margin-left:auto;",
+          downloadButton(
+            "download_team_card",
+            tagList(tags$i(class = "fa-solid fa-image"), "Share Team Breakdown"),
+            class = "xruns-share-btn"
+          )
+        )
       ),
 
       # Section 1 — Team Header
@@ -3882,6 +5073,60 @@ server <- function(input, output, session) {
   current_year         <- reactive({ current_year_rv() })
   current_players_view <- reactive(players_view_by_year[[current_year()]])
 
+  # ---- Selected player ID (reactive value, persists across renders) ----
+  selected_player_id <- reactiveVal(NULL)
+
+  # ---- Shareable URL state --------------------------------------------------
+  query_state_ready <- reactiveVal(FALSE)
+
+  restore_query_state <- function(qs) {
+    tab <- tolower(xruns_safe_text(qs$tab, "rankings"))
+
+    if (identical(tab, "player")) {
+      pid <- suppressWarnings(as.integer(xruns_safe_text(qs$id, "")))
+      if (!is.na(pid)) selected_player_id(pid)
+      nav_select("main_nav", "Player Profile")
+    } else if (identical(tab, "team")) {
+      abbrev <- toupper(xruns_safe_text(qs$abbrev, ""))
+      if (abbrev %in% TEAM_META$abbrev) {
+        updateSelectInput(session, "tb_team", selected = abbrev)
+      }
+      nav_select("main_nav", "Team Breakdown")
+    } else if (identical(tab, "rankings")) {
+      nav_select("main_nav", "Team Rankings")
+    }
+  }
+
+  observe({
+    qs <- getQueryString(session)
+    isolate({
+      if (query_state_ready()) return()
+      restore_query_state(qs)
+      session$onFlushed(function() {
+        query_state_ready(TRUE)
+      }, once = TRUE)
+    })
+  })
+
+  observe({
+    req(query_state_ready())
+    req(input$main_nav)
+    active_tab <- input$main_nav %||% "Team Rankings"
+    query <- switch(active_tab,
+      "Player Profile" = {
+        pid <- selected_player_id()
+        if (is.null(pid) || is.na(pid)) "?tab=player" else paste0("?tab=player&id=", utils::URLencode(as.character(pid), reserved = TRUE))
+      },
+      "Team Breakdown" = {
+        abbrev <- input$tb_team %||% "LAD"
+        paste0("?tab=team&abbrev=", utils::URLencode(abbrev, reserved = TRUE))
+      },
+      "Team Rankings" = "?tab=rankings",
+      ""
+    )
+    updateQueryString(query, mode = "replace", session = session)
+  })
+
   # ---- Team table row click → navigate to Team Breakdown ----
   observeEvent(input$team_table_row_clicked, {
     abbrev_clicked <- input$team_table_row_clicked
@@ -3889,9 +5134,6 @@ server <- function(input, output, session) {
     updateSelectInput(session, "tb_team", selected = abbrev_clicked)
     nav_select("main_nav", "Team Breakdown")
   })
-
-  # ---- Selected player ID (reactive value, persists across renders) ----
-  selected_player_id <- reactiveVal(NULL)
 
   # ---- Player table row click → navigate to Player Profile tab ----
   observeEvent(input$player_table_row_clicked, {
@@ -3977,6 +5219,27 @@ server <- function(input, output, session) {
       dplyr::arrange(dplyr::case_when(Role == "Player" ~ 0L, TRUE ~ 1L)) %>%
       dplyr::slice(1)
   })
+
+  output$download_player_card <- downloadHandler(
+    filename = function() {
+      row <- current_player_row()
+      name <- if (is.null(row) || nrow(row) == 0) "player" else xruns_slug(row$Player)
+      paste0("xruns-player-", name, "-", current_year(), ".png")
+    },
+    content = function(file) {
+      row <- current_player_row()
+      if (is.null(row) || nrow(row) == 0) {
+        stop("Select a player before downloading a share card.", call. = FALSE)
+      }
+      card <- xruns_player_share_card(
+        row = row,
+        season = current_year(),
+        base_url = xruns_current_base_url(session)
+      )
+      xruns_render_share_png(card, file)
+    },
+    contentType = "image/png"
+  )
 
   # ---- Helper: initials from a name ----
   make_initials <- function(name) {
@@ -4088,7 +5351,12 @@ server <- function(input, output, session) {
       tags$div(
         class = "xruns-pp-overall",
         tags$div(class = paste("xruns-pp-overall-val", overall_cls), overall_sign),
-        tags$div(class = "xruns-pp-overall-label", "Overall · runs/9 vs avg")
+        tags$div(class = "xruns-pp-overall-label", "Overall - runs/9 vs avg"),
+        downloadButton(
+          "download_player_card",
+          tagList(tags$i(class = "fa-solid fa-image"), "Share Player Card"),
+          class = "xruns-share-btn xruns-share-btn-secondary"
+        )
       )
     )
   })
@@ -4406,6 +5674,25 @@ server <- function(input, output, session) {
       error = function(e) team_tbl_by_year[[yc]]
     )
   })
+
+  output$download_rankings_card <- downloadHandler(
+    filename = function() {
+      paste0("xruns-rankings-", current_year(), ".png")
+    },
+    content = function(file) {
+      tt <- current_team_tbl()
+      if (is.null(tt) || nrow(tt) == 0) {
+        stop("Team rankings are not available for this view.", call. = FALSE)
+      }
+      card <- xruns_rankings_share_card(
+        tt = tt,
+        season = current_year(),
+        base_url = xruns_current_base_url(session)
+      )
+      xruns_render_share_png(card, file)
+    },
+    contentType = "image/png"
+  )
   
   # ---- Headings ----
   output$team_heading    <- renderText(sprintf("%s Team Efficiency Ratings", current_year()))
@@ -5204,6 +6491,47 @@ server <- function(input, output, session) {
       tb_def_vs_a   = tb_def_vs_a,   ta_def_vs_b   = ta_def_vs_b
     )
   }, ignoreNULL = TRUE)
+
+  output$mp_share_button <- renderUI({
+    res <- mp_result()
+    if (is.null(res)) return(NULL)
+    downloadButton(
+      "download_matchup_card",
+      tagList(tags$i(class = "fa-solid fa-image"), "Share Matchup"),
+      class = "xruns-share-btn xruns-share-btn-secondary"
+    )
+  })
+
+  output$download_matchup_card <- downloadHandler(
+    filename = function() {
+      res <- mp_result()
+      if (is.null(res)) {
+        return(paste0("xruns-matchup-", current_year(), ".png"))
+      }
+      paste0(
+        "xruns-matchup-",
+        xruns_slug(res$ta$abbrev),
+        "-vs-",
+        xruns_slug(res$tb$abbrev),
+        "-",
+        current_year(),
+        ".png"
+      )
+    },
+    content = function(file) {
+      res <- mp_result()
+      if (is.null(res)) {
+        stop("Generate a matchup before downloading a share card.", call. = FALSE)
+      }
+      card <- xruns_matchup_share_card(
+        res = res,
+        season = current_year(),
+        base_url = xruns_current_base_url(session)
+      )
+      xruns_render_share_png(card, file)
+    },
+    contentType = "image/png"
+  )
   
   # Renders the full results panel (header, expected runs, win bar, pitchers, scores).
   mp_team_color <- function(row, fallback = "#151922") {
@@ -5257,6 +6585,7 @@ server <- function(input, output, session) {
     })
     
     tags$div(
+      class = "mp-results-wrap",
       style = "padding:0 20px 8px 20px;",
       
       # Header: logos + team names + season ratings.
@@ -5580,6 +6909,40 @@ server <- function(input, output, session) {
     row[1, ]
   })
 
+  output$download_team_card <- downloadHandler(
+    filename = function() {
+      row <- selected_team_row()
+      team <- if (is.null(row) || nrow(row) == 0) "team" else xruns_slug(row$abbrev)
+      paste0("xruns-team-", team, "-", current_year(), ".png")
+    },
+    content = function(file) {
+      row <- selected_team_row()
+      tt <- current_team_tbl()
+      if (is.null(row) || nrow(row) == 0) {
+        stop("Select a team before downloading a share card.", call. = FALSE)
+      }
+      rank_for <- function(metric) {
+        rank_val <- which(dplyr::arrange(tt, dplyr::desc(.data[[metric]]))$abbrev == row$abbrev[1])
+        if (length(rank_val) == 0) NA_integer_ else rank_val
+      }
+      ranks <- list(
+        overall = rank_for("overall"),
+        offense = rank_for("off_rating"),
+        pitching = rank_for("def_pitching"),
+        fielding = rank_for("def_fld")
+      )
+      if (is.na(ranks$overall)) ranks$overall <- row$rank[1]
+      card <- xruns_team_share_card(
+        row = row,
+        ranks = ranks,
+        season = current_year(),
+        base_url = xruns_current_base_url(session)
+      )
+      xruns_render_share_png(card, file)
+    },
+    contentType = "image/png"
+  )
+
   # Reactive: player view filtered to the selected team
   selected_team_players <- reactive({
     pv  <- current_players_view()
@@ -5604,13 +6967,14 @@ server <- function(input, output, session) {
 
     pill <- function(label, val, rank, color) {
       tags$div(
+        class = "tb-rating-pill",
         style = paste0(
           "display:flex; flex-direction:column; align-items:center; ",
           "background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; ",
           "padding:12px 20px; min-width:110px;"
         ),
         tags$span(style = "font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8;", label),
-        tags$span(style = paste0("font-size:1.55rem; font-weight:800; color:", color, "; line-height:1.15; margin-top:2px;"), fmt_val(val)),
+        tags$span(class = "tb-pill-value", style = paste0("font-size:1.55rem; font-weight:800; color:", color, "; line-height:1.15; margin-top:2px;"), fmt_val(val)),
         tags$span(style = "font-size:11px; color:#94a3b8; margin-top:2px;", fmt_rank(rank, n))
       )
     }
@@ -5618,11 +6982,14 @@ server <- function(input, output, session) {
     val_color <- function(v) if (v >= 0) "#047857" else "#b91c1c"
 
     logo_tag <- if (!is.na(row$team_logo_espn))
-      tags$img(src = row$team_logo_espn, style = "width:72px; height:72px; object-fit:contain;")
+      tags$div(class = "tb-header-logo",
+               tags$img(src = row$team_logo_espn, style = "width:72px; height:72px; object-fit:contain;"))
     else
-      tags$div(style = "width:72px; height:72px; background:#f1f5f9; border-radius:10px;")
+      tags$div(class = "tb-header-logo",
+               tags$div(style = "width:72px; height:72px; background:#f1f5f9; border-radius:10px;"))
 
     tags$div(
+      class = "tb-header-card",
       style = paste0(
         "display:flex; align-items:center; gap:24px; flex-wrap:wrap; ",
         "background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; ",
@@ -5630,11 +6997,13 @@ server <- function(input, output, session) {
       ),
       logo_tag,
       tags$div(
+        class = "tb-header-title",
         style = "flex:1;",
         tags$div(style = "font-size:1.4rem; font-weight:800; color:#1e293b; line-height:1.2;", row$team_name),
         tags$div(style = "font-size:12px; color:#94a3b8; margin-top:3px;", current_year())
       ),
       tags$div(
+        class = "tb-rating-pills",
         style = "display:flex; gap:12px; flex-wrap:wrap;",
         pill("Overall",  row$overall,     rank_overall, val_color(row$overall)),
         pill("Offense",  row$off_rating,  rank_off,     val_color(row$off_rating)),
