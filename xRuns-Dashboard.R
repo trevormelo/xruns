@@ -4743,7 +4743,7 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
   team_components <- list(
     list(label = "Offense", value = row$off_rating[1], pct = pct_rank(row$off_rating[1], team_pool$off_rating)),
     list(label = "Pitching", value = row$def_pitching[1], pct = pct_rank(row$def_pitching[1], team_pool$def_pitching)),
-    list(label = "Defense", value = row$def_rating[1], pct = pct_rank(row$def_rating[1], team_pool$def_rating))
+    list(label = "Fielding", value = row$def_fld[1], pct = pct_rank(row$def_fld[1], team_pool$def_fld))
   )
 
   player_mini <- function(title, player_row, primary_col, primary_label, stat_specs = list()) {
