@@ -3775,6 +3775,110 @@ xruns_current_base_url <- function(session) {
   paste0(protocol, "//", host, port_part, path)
 }
 
+xruns_route_hash <- function(path) {
+  path <- xruns_safe_text(path, "team-rankings")
+  path <- sub("^[/# !]+", "", path)
+  paste0("#/", path)
+}
+
+xruns_parse_route_hash <- function(hash) {
+  route <- xruns_safe_text(hash, "")
+  if (!nzchar(route)) return(list(tab = ""))
+  route <- utils::URLdecode(route)
+  route <- sub("^#!?/?", "", route)
+  route <- sub("^/+", "", route)
+  route <- sub("\\?.*$", "", route)
+  route <- gsub("/+", "/", route)
+  route <- gsub("_", "-", route)
+  route <- tolower(route)
+  parts <- unlist(strsplit(route, "/", fixed = TRUE), use.names = FALSE)
+  parts <- parts[nzchar(parts)]
+  if (length(parts) == 0) return(list(tab = ""))
+
+  first <- parts[1]
+  if (first %in% c("team-rankings", "rankings")) {
+    return(list(tab = "rankings"))
+  }
+  if (first %in% c("player-rankings", "players")) {
+    return(list(tab = "players"))
+  }
+  if (first %in% c("methodology", "model")) {
+    return(list(tab = "methodology"))
+  }
+
+  collapsed <- paste(parts, collapse = "-")
+  if (first == "team-profile" || startsWith(collapsed, "team-profile-")) {
+    abbrev <- if (length(parts) >= 2) parts[2] else sub("^team-profile-", "", collapsed)
+    abbrev <- toupper(sub("-.*$", "", abbrev))
+    return(list(tab = "team", abbrev = abbrev))
+  }
+
+  if (first == "player-profile" || startsWith(collapsed, "player-profile-")) {
+    id_source <- if (length(parts) >= 2) paste(parts[-1], collapse = "-") else sub("^player-profile-", "", collapsed)
+    nums <- regmatches(id_source, gregexpr("[0-9]+", id_source))[[1]]
+    pid <- if (length(nums) > 0) suppressWarnings(as.integer(tail(nums, 1))) else NA_integer_
+    return(list(tab = "player", id = pid))
+  }
+
+  if (first == "matchup-simulator" || startsWith(collapsed, "matchup-simulator-")) {
+    team_detail <- if (length(parts) >= 2) parts[2] else sub("^matchup-simulator-", "", collapsed)
+    starter_detail <- if (length(parts) >= 3) paste(parts[-c(1, 2)], collapse = "-") else ""
+    teams <- regmatches(team_detail, gregexpr("\\b[A-Za-z]{2,3}\\b", team_detail))[[1]]
+    teams <- toupper(teams[teams %in% tolower(TEAM_META$abbrev) | toupper(teams) %in% TEAM_META$abbrev])
+    teams <- unique(teams)
+    nums <- regmatches(starter_detail, gregexpr("[0-9]{4,}", starter_detail))[[1]]
+    starter_a <- if (length(nums) >= 1) suppressWarnings(as.integer(nums[1])) else NA_integer_
+    starter_b <- if (length(nums) >= 2) suppressWarnings(as.integer(nums[2])) else NA_integer_
+    return(list(
+      tab = "matchup",
+      team_a = if (length(teams) >= 1) teams[1] else NA_character_,
+      team_b = if (length(teams) >= 2) teams[2] else NA_character_,
+      starter_a = starter_a,
+      starter_b = starter_b
+    ))
+  }
+
+  list(tab = "")
+}
+
+xruns_player_profile_route <- function(row, player_id = NULL) {
+  pid <- player_id %||% if (!is.null(row) && "player_id" %in% names(row)) row$player_id[1] else NA_integer_
+  name <- if (!is.null(row) && "Player" %in% names(row)) row$Player[1] else "player"
+  if (is.na(pid)) {
+    xruns_route_hash("player-profile")
+  } else {
+    xruns_route_hash(paste0("player-profile/", xruns_slug(name), "-", as.integer(pid)))
+  }
+}
+
+xruns_team_profile_route <- function(abbrev) {
+  abbrev <- tolower(xruns_safe_text(abbrev, "lad"))
+  xruns_route_hash(paste0("team-profile/", xruns_slug(abbrev)))
+}
+
+xruns_pitcher_route_label <- function(player_id) {
+  pid <- suppressWarnings(as.integer(player_id))
+  if (is.na(pid)) return(NULL)
+  row <- mp_current_pitchers %>% dplyr::filter(player_id == pid) %>% head(1)
+  name <- if (nrow(row) > 0) row$player[1] else "starter"
+  paste0(xruns_slug(name), "-", pid)
+}
+
+xruns_matchup_route <- function(team_a, team_b, starter_a = NULL, starter_b = NULL) {
+  matchup <- paste0(
+    "matchup-simulator/",
+    xruns_slug(team_a), "-vs-", xruns_slug(team_b)
+  )
+  starter_bits <- Filter(Negate(is.null), list(
+    xruns_pitcher_route_label(starter_a),
+    xruns_pitcher_route_label(starter_b)
+  ))
+  if (length(starter_bits) > 0) {
+    matchup <- paste0(matchup, "/", paste(starter_bits, collapse = "-vs-"))
+  }
+  xruns_route_hash(matchup)
+}
+
 xruns_display_base_url <- function(base_url, card_type = "rankings") {
   url <- xruns_safe_text(base_url, fallback = "xruns")
   if (grepl("(^|//)(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(:|/|$)", url)) {
@@ -5056,6 +5160,39 @@ ui <- page_navbar(
       ")),
       # JS: handle year-change reset of time period chips back to Season
       tags$script(HTML("
+        (function() {
+          function xrunsPublicBase() {
+            var loc = window.location;
+            var host = loc.hostname || '';
+            var path = loc.pathname || '/';
+            var isLocal = /^(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)$/.test(host);
+            var isConnectCloud = /connect\\.posit\\.cloud$/i.test(host);
+
+            if (isConnectCloud) return loc.origin + '/';
+            if (!isLocal && /^\\/_w_[A-Za-z0-9]+/.test(path)) return loc.origin + '/';
+            return loc.origin + path;
+          }
+
+          function xrunsNotifyRoute() {
+            if (!window.Shiny) return;
+            if (!window.location.hash) return;
+            Shiny.setInputValue('xruns_route_hash', window.location.hash || '', {priority: 'event'});
+          }
+
+          Shiny.addCustomMessageHandler('xrunsRoute', function(msg) {
+            var route = msg && msg.route ? String(msg.route) : '#/team-rankings';
+            if (route.charAt(0) !== '#') route = '#/' + route.replace(/^\\/+/, '');
+            var target = xrunsPublicBase().replace(/[#?].*$/, '') + route;
+            if (window.location.href !== target) {
+              window.history.replaceState(null, document.title, target);
+            }
+          });
+
+          document.addEventListener('shiny:connected', xrunsNotifyRoute);
+          window.addEventListener('hashchange', xrunsNotifyRoute);
+          window.addEventListener('popstate', xrunsNotifyRoute);
+        })();
+
         function xrunsDownloadClientShareCard(cardId) {
           var node = document.getElementById(cardId);
           if (!node) return;
@@ -5692,55 +5829,106 @@ server <- function(input, output, session) {
   selected_player_id <- reactiveVal(NULL)
 
   # ---- Shareable URL state --------------------------------------------------
-  query_state_ready <- reactiveVal(FALSE)
+  route_state_ready <- reactiveVal(FALSE)
+  pending_starter_a <- reactiveVal(NULL)
+  pending_starter_b <- reactiveVal(NULL)
+  pending_matchup_generate <- reactiveVal(FALSE)
+  mp_generation_token <- reactiveVal(0L)
 
-  restore_query_state <- function(qs) {
-    tab <- tolower(xruns_safe_text(qs$tab, "rankings"))
+  restore_route_state <- function(hash = "", qs = list()) {
+    route <- xruns_parse_route_hash(hash)
+    tab <- xruns_safe_text(route$tab, "")
+
+    if (!nzchar(tab)) {
+      tab <- tolower(xruns_safe_text(qs$tab, "rankings"))
+      if (identical(tab, "player")) {
+        route$id <- suppressWarnings(as.integer(xruns_safe_text(qs$id, "")))
+      } else if (identical(tab, "team")) {
+        route$abbrev <- toupper(xruns_safe_text(qs$abbrev, ""))
+      } else if (identical(tab, "matchup")) {
+        route$team_a <- toupper(xruns_safe_text(qs$team_a, qs$a %||% ""))
+        route$team_b <- toupper(xruns_safe_text(qs$team_b, qs$b %||% ""))
+        route$starter_a <- suppressWarnings(as.integer(xruns_safe_text(qs$starter_a, qs$sa %||% "")))
+        route$starter_b <- suppressWarnings(as.integer(xruns_safe_text(qs$starter_b, qs$sb %||% "")))
+      }
+    }
 
     if (identical(tab, "player")) {
-      pid <- suppressWarnings(as.integer(xruns_safe_text(qs$id, "")))
+      pid <- suppressWarnings(as.integer(route$id %||% NA_integer_))
       if (!is.na(pid)) selected_player_id(pid)
       nav_select("main_nav", "Player Profile")
     } else if (identical(tab, "team")) {
-      abbrev <- toupper(xruns_safe_text(qs$abbrev, ""))
+      abbrev <- toupper(xruns_safe_text(route$abbrev, ""))
       if (abbrev %in% TEAM_META$abbrev) {
         updateSelectInput(session, "tb_team", selected = abbrev)
       }
       nav_select("main_nav", "Team Profile")
-    } else if (identical(tab, "rankings")) {
+    } else if (identical(tab, "matchup")) {
+      team_a <- toupper(xruns_safe_text(route$team_a, ""))
+      team_b <- toupper(xruns_safe_text(route$team_b, ""))
+      if (team_a %in% TEAM_META$abbrev) updateSelectInput(session, "mp_team_a", selected = team_a)
+      if (team_b %in% TEAM_META$abbrev) updateSelectInput(session, "mp_team_b", selected = team_b)
+      starter_a <- suppressWarnings(as.integer(route$starter_a %||% NA_integer_))
+      starter_b <- suppressWarnings(as.integer(route$starter_b %||% NA_integer_))
+      pending_starter_a(if (!is.na(starter_a)) starter_a else NULL)
+      pending_starter_b(if (!is.na(starter_b)) starter_b else NULL)
+      pending_matchup_generate(TRUE)
+      nav_select("main_nav", "Matchup Simulator")
+    } else if (identical(tab, "players")) {
+      nav_select("main_nav", "Player Rankings")
+    } else if (identical(tab, "methodology")) {
+      nav_select("main_nav", "Methodology")
+    } else {
       nav_select("main_nav", "Team Rankings")
     }
   }
 
   observe({
     qs <- getQueryString(session)
+    hash <- getUrlHash(session)
     isolate({
-      if (query_state_ready()) return()
-      restore_query_state(qs)
+      if (route_state_ready()) return()
+      restore_route_state(hash, qs)
       session$onFlushed(function() {
-        query_state_ready(TRUE)
+        route_state_ready(TRUE)
       }, once = TRUE)
     })
   })
 
   observe({
-    req(query_state_ready())
+    req(route_state_ready())
     req(input$main_nav)
     active_tab <- input$main_nav %||% "Team Rankings"
-    query <- switch(active_tab,
+    route <- switch(active_tab,
       "Player Profile" = {
         pid <- selected_player_id()
-        if (is.null(pid) || is.na(pid)) "?tab=player" else paste0("?tab=player&id=", utils::URLencode(as.character(pid), reserved = TRUE))
+        row <- tryCatch(current_player_row(), error = function(e) NULL)
+        xruns_player_profile_route(row, pid)
       },
       "Team Profile" = {
         abbrev <- input$tb_team %||% "LAD"
-        paste0("?tab=team&abbrev=", utils::URLencode(abbrev, reserved = TRUE))
+        xruns_team_profile_route(abbrev)
       },
-      "Team Rankings" = "?tab=rankings",
-      ""
+      "Matchup Simulator" = {
+        xruns_matchup_route(
+          input$mp_team_a %||% mp_team_choices[[1]],
+          input$mp_team_b %||% mp_team_choices[[min(2L, length(mp_team_choices))]],
+          input$mp_starter_a,
+          input$mp_starter_b
+        )
+      },
+      "Player Rankings" = xruns_route_hash("player-rankings"),
+      "Methodology" = xruns_route_hash("methodology"),
+      "Team Rankings" = xruns_route_hash("team-rankings"),
+      xruns_route_hash("team-rankings")
     )
-    updateQueryString(query, mode = "replace", session = session)
+    session$sendCustomMessage("xrunsRoute", list(route = route))
   })
+
+  observeEvent(input$xruns_route_hash, {
+    if (!route_state_ready()) return()
+    restore_route_state(input$xruns_route_hash, list())
+  }, ignoreInit = TRUE)
 
   # ---- Team table row click → navigate to Team Profile ----
   observeEvent(input$team_table_row_clicked, {
@@ -6968,8 +7156,19 @@ server <- function(input, output, session) {
       dplyr::filter(abbrev == input$mp_team_a) %>%
       dplyr::arrange(dplyr::desc(pa_rv))
     ch <- setNames(as.character(ps$player_id), ps$player)
+    pending <- pending_starter_a()
+    selected <- if (!is.null(pending) && as.character(pending) %in% ch) {
+      pending_starter_a(NULL)
+      as.character(pending)
+    } else if (length(ch) > 0) {
+      if (!is.null(pending)) pending_starter_a(NULL)
+      ch[[1]]
+    } else {
+      if (!is.null(pending)) pending_starter_a(NULL)
+      character(0)
+    }
     updateSelectizeInput(session, "mp_starter_a", choices = ch,
-                         selected = if (length(ch) > 0) ch[[1]] else character(0))
+                         selected = selected)
   })
   
   observe({
@@ -6978,12 +7177,35 @@ server <- function(input, output, session) {
       dplyr::filter(abbrev == input$mp_team_b) %>%
       dplyr::arrange(dplyr::desc(pa_rv))
     ch <- setNames(as.character(ps$player_id), ps$player)
+    pending <- pending_starter_b()
+    selected <- if (!is.null(pending) && as.character(pending) %in% ch) {
+      pending_starter_b(NULL)
+      as.character(pending)
+    } else if (length(ch) > 0) {
+      if (!is.null(pending)) pending_starter_b(NULL)
+      ch[[1]]
+    } else {
+      if (!is.null(pending)) pending_starter_b(NULL)
+      character(0)
+    }
     updateSelectizeInput(session, "mp_starter_b", choices = ch,
-                         selected = if (length(ch) > 0) ch[[1]] else character(0))
+                         selected = selected)
+  })
+
+  observeEvent(input$mp_predict, {
+    mp_generation_token(mp_generation_token() + 1L)
+  }, ignoreInit = TRUE)
+
+  observe({
+    req(pending_matchup_generate())
+    req(input$mp_team_a, input$mp_team_b, input$mp_starter_a, input$mp_starter_b)
+    req(is.null(pending_starter_a()), is.null(pending_starter_b()))
+    pending_matchup_generate(FALSE)
+    mp_generation_token(mp_generation_token() + 1L)
   })
   
   # Core prediction (fires when button is clicked).
-  mp_result <- eventReactive(input$mp_predict, {
+  mp_result <- eventReactive(mp_generation_token(), {
     req(input$mp_team_a, input$mp_team_b)
     
     tt <- current_team_tbl()
