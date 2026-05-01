@@ -5185,13 +5185,19 @@ ui <- page_navbar(
             Shiny.setInputValue('xruns_route_hash', window.location.hash || '', {priority: 'event'});
           }
 
+          var xrunsRouteInitialized = false;
           Shiny.addCustomMessageHandler('xrunsRoute', function(msg) {
             var route = msg && msg.route ? String(msg.route) : '#/team-rankings';
             if (route.charAt(0) !== '#') route = '#/' + route.replace(/^\\/+/, '');
             var target = xrunsPublicBase().replace(/[#?].*$/, '') + route;
             if (window.location.href !== target) {
-              window.history.replaceState(null, document.title, target);
+              if (xrunsRouteInitialized) {
+                window.history.pushState(null, document.title, target);
+              } else {
+                window.history.replaceState(null, document.title, target);
+              }
             }
+            xrunsRouteInitialized = true;
           });
 
           document.addEventListener('shiny:connected', xrunsNotifyRoute);
