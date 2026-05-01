@@ -7932,13 +7932,11 @@ server <- function(input, output, session) {
       )
     }
 
-    # Y-axis categories (fixed order, top-to-bottom)
-    cats <- c("Overall", "Offense", "Defense")
-
     # x values per category
     x_overall <- tt$overall
     x_offense <- tt$off_rating
-    x_defense <- tt$def_rating
+    x_pitching <- tt$def_pitching
+    x_fielding <- tt$def_fld
 
     # Build one trace per team so each dot can have its own color + opacity.
     # This is necessary because Plotly marker color arrays don't support
@@ -7948,20 +7946,22 @@ server <- function(input, output, session) {
     # one trace for the selected team on top.
     not_sel <- !is_sel
 
-    # Flatten all three rows into long-format vectors for the non-selected trace
-    x_bg <- c(x_overall[not_sel], x_offense[not_sel], x_defense[not_sel])
+    # Flatten all rows into long-format vectors for the non-selected trace
+    x_bg <- c(x_overall[not_sel], x_offense[not_sel], x_pitching[not_sel], x_fielding[not_sel])
     y_bg <- c(rep("Overall", sum(not_sel)),
                rep("Offense", sum(not_sel)),
-               rep("Defense", sum(not_sel)))
-    col_bg    <- rep(muted_colors[not_sel], 3)
+               rep("Pitching", sum(not_sel)),
+               rep("Fielding", sum(not_sel)))
+    col_bg    <- rep(muted_colors[not_sel], 4)
     hover_bg  <- c(
       hover_for("Overall", x_overall)[not_sel],
       hover_for("Offense", x_offense)[not_sel],
-      hover_for("Defense", x_defense)[not_sel]
+      hover_for("Pitching", x_pitching)[not_sel],
+      hover_for("Fielding", x_fielding)[not_sel]
     )
 
-    # Rows in display order (top → bottom): Overall, Offense, Defense
-    row_labels <- c("Overall", "Offense", "Defense")
+    # Rows in display order (top to bottom): Overall, Offense, Pitching, Fielding
+    row_labels <- c("Overall", "Offense", "Pitching", "Fielding")
 
     p <- plot_ly() %>%
       # All non-selected teams — single vectorised trace with per-point colors
@@ -7983,10 +7983,10 @@ server <- function(input, output, session) {
         showlegend = FALSE,
         name       = "Other teams"
       ) %>%
-      # Selected team — three points (one per row), full color, larger, no label
+      # Selected team points, full color, larger, no label
       add_trace(
-        x    = c(x_overall[is_sel], x_offense[is_sel], x_defense[is_sel]),
-        y    = factor(c("Overall", "Offense", "Defense"), levels = row_labels),
+        x    = c(x_overall[is_sel], x_offense[is_sel], x_pitching[is_sel], x_fielding[is_sel]),
+        y    = factor(c("Overall", "Offense", "Pitching", "Fielding"), levels = row_labels),
         type = "scatter",
         mode = "markers",
         marker = list(
@@ -7997,7 +7997,8 @@ server <- function(input, output, session) {
         hovertext = c(
           hover_for("Overall", x_overall)[is_sel],
           hover_for("Offense", x_offense)[is_sel],
-          hover_for("Defense", x_defense)[is_sel]
+          hover_for("Pitching", x_pitching)[is_sel],
+          hover_for("Fielding", x_fielding)[is_sel]
         ),
         hoverinfo  = "text",
         hoverlabel = list(bgcolor = "#1e293b", bordercolor = "#334155",
@@ -8024,7 +8025,7 @@ server <- function(input, output, session) {
         shapes = list(list(
           type = "line",
           x0 = 0, x1 = 0,
-          y0 = -0.5, y1 = 2.5,
+          y0 = -0.5, y1 = 3.5,
           yref = "y",
           line = list(color = "#cbd5e0", width = 1, dash = "dot")
         )),
