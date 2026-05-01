@@ -3757,10 +3757,11 @@ xruns_team_color <- function(row, fallback = "#1a365d") {
   if (is.na(col) || !grepl("^#[0-9A-Fa-f]{6}$", col)) fallback else col
 }
 
-xruns_headshot_url <- function(player_id, width = 220) {
+xruns_headshot_url <- function(player_id, width = 220, height = width) {
   sprintf(
-    "https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_%d,q_auto:best/v1/people/%d/headshot/67/current",
+    "https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_%d,h_%d,c_fill,g_face,q_auto:best/v1/people/%d/headshot/67/current",
     width,
+    height,
     as.integer(player_id)
   )
 }
@@ -3772,6 +3773,26 @@ xruns_current_base_url <- function(session) {
   path     <- session$clientData$url_pathname %||% "/"
   port_part <- if (nzchar(port) && !(port %in% c("80", "443"))) paste0(":", port) else ""
   paste0(protocol, "//", host, port_part, path)
+}
+
+xruns_display_base_url <- function(base_url, card_type = "rankings") {
+  url <- xruns_safe_text(base_url, fallback = "xruns")
+  if (grepl("(^|//)(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(:|/|$)", url)) {
+    return("Dashboard preview")
+  }
+  host <- sub("^https?://", "", url)
+  host <- sub("/.*$", "", host)
+  host <- sub("^www\\.", "", host)
+  path <- switch(
+    card_type,
+    "matchup" = "matchup-simulator",
+    "team" = "team-profile",
+    "player" = "player-profile",
+    "rankings" = "team-rankings",
+    card_type
+  )
+  label <- paste0(host, "/", path)
+  if (nchar(label) > 58) paste0(substr(label, 1, 55), "...") else label
 }
 
 xruns_share_card_css <- function() {
@@ -3842,13 +3863,21 @@ xruns_share_card_css <- function() {
     flex: 0 0 auto;
   }
   .xruns-share-headshot {
-    width: 132px;
-    height: 132px;
+    width: 138px;
+    height: 138px;
     border-radius: 50%;
-    object-fit: cover;
-    background: #e2e8f0;
-    border: 4px solid rgba(255, 255, 255, 0.30);
+    background-color: #e2e8f0;
+    border: 5px solid rgba(255, 255, 255, 0.34);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+    overflow: hidden;
     flex: 0 0 auto;
+  }
+  .xruns-share-headshot img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    object-position: center center;
   }
   .xruns-share-body {
     padding: 30px 42px 70px;
@@ -3904,10 +3933,15 @@ xruns_share_card_css <- function() {
   }
   .xruns-rankings-share-card .xruns-share-body {
     grid-template-columns: 0.94fr 1.06fr;
+    padding-bottom: 92px;
   }
   .xruns-rankings-share-card .xruns-share-pills {
     grid-template-rows: repeat(2, minmax(0, 1fr));
     gap: 16px;
+  }
+  .xruns-rankings-share-card .xruns-share-stat {
+    padding-top: 22px;
+    padding-bottom: 18px;
   }
   .xruns-rankings-leader {
     display: flex;
@@ -4017,14 +4051,14 @@ xruns_share_card_css <- function() {
   }
   .xruns-rank-list {
     display: grid;
-    gap: 10px;
+    gap: 8px;
   }
   .xruns-rank-row {
     display: grid;
-    grid-template-columns: 54px 42px minmax(0, 1fr) 92px;
-    gap: 14px;
+    grid-template-columns: 48px 40px minmax(0, 1fr) 86px;
+    gap: 12px;
     align-items: center;
-    min-height: 56px;
+    min-height: 52px;
     padding: 8px 12px;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
@@ -4042,7 +4076,7 @@ xruns_share_card_css <- function() {
   }
   .xruns-rank-team {
     color: #1e293b;
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 850;
     white-space: nowrap;
     overflow: hidden;
@@ -4134,15 +4168,38 @@ xruns_share_card_css <- function() {
   }
   .xruns-matchup-pitchers {
     display: grid;
-    gap: 10px;
-    margin-top: 14px;
+    gap: 18px;
+    margin-top: 22px;
   }
   .xruns-matchup-pitcher {
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
-    min-height: 86px;
-    padding: 12px 16px;
+    min-height: 104px;
+    padding: 15px 18px;
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 18px;
+    align-items: center;
+  }
+  .xruns-matchup-pitcher-photo {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #e2e8f0;
+    border: 3px solid #f8fafc;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.10);
+  }
+  .xruns-matchup-pitcher-photo img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    object-position: center center;
+  }
+  .xruns-matchup-pitcher-copy {
+    min-width: 0;
   }
   .xruns-matchup-pitcher-name {
     color: #1e293b;
@@ -4150,6 +4207,13 @@ xruns_share_card_css <- function() {
     font-weight: 900;
     line-height: 1.1;
     margin-top: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .xruns-matchup-pitcher .xruns-share-sub {
+    font-size: 16px;
+    margin-top: 8px;
   }
   .xruns-matchup-prob {
     margin-top: 14px;
@@ -4175,19 +4239,229 @@ xruns_share_card_css <- function() {
     position: absolute;
     left: 42px;
     right: 42px;
-    bottom: 24px;
+    bottom: 18px;
     display: flex;
     justify-content: space-between;
     gap: 20px;
     color: #94a3b8;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 750;
+    align-items: center;
   }
   .xruns-share-watermark span:first-child {
-    max-width: 68%;
+    max-width: 56%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .xruns-share-watermark span:last-child {
+    max-width: 38%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+  }
+  .xruns-share-source-pill {
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: #64748b;
+  }
+  .xruns-team-rank-split {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .xruns-team-mini-rank {
+    padding-top: 2px;
+  }
+  .xruns-team-mini-rank-label {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 850;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .xruns-team-mini-rank-value {
+    color: #1e293b;
+    font-size: 34px;
+    font-weight: 900;
+    line-height: 1.15;
+    margin-top: 8px;
+  }
+  .xruns-team-share-card .xruns-share-body {
+    grid-template-columns: 0.88fr 1.12fr;
+    gap: 28px;
+    padding-bottom: 88px;
+  }
+  .xruns-team-rank-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 24px 26px 20px;
+    overflow: hidden;
+  }
+  .xruns-team-rank-top {
+    display: grid;
+    grid-template-columns: 1.25fr 0.82fr 0.82fr;
+    gap: 22px;
+    align-items: start;
+  }
+  .xruns-team-season-rank-value {
+    color: #1a365d;
+    font-size: 82px;
+    font-weight: 900;
+    line-height: 0.95;
+    margin-top: 16px;
+  }
+  .xruns-team-left-percentiles {
+    border-top: 1px solid #e2e8f0;
+    margin-top: 16px;
+    padding-top: 14px;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .xruns-team-left-percentiles .xruns-share-label {
+    font-size: 13px;
+  }
+  .xruns-team-left-percentile-bars {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .xruns-team-pct-row {
+    display: grid;
+    grid-template-columns: 94px minmax(0, 1fr) 64px;
+    gap: 12px;
+    align-items: center;
+  }
+  .xruns-team-pct-name {
+    color: #334155;
+    font-size: 16px;
+    font-weight: 850;
+  }
+  .xruns-team-pct-track {
+    position: relative;
+    height: 18px;
+    border-radius: 999px;
+    background: #e8edf4;
+  }
+  .xruns-team-pct-fill {
+    height: 100%;
+    min-width: 3px;
+    border-radius: 999px;
+  }
+  .xruns-team-pct-badge {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 44px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 999px;
+    border: 3px solid #ffffff;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .xruns-team-pct-value {
+    font-size: 17px;
+    font-weight: 900;
+    text-align: right;
+  }
+  .xruns-team-leader-stack {
+    display: grid;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    min-height: 0;
+  }
+  .xruns-team-leader-card {
+    display: grid;
+    grid-template-columns: 90px minmax(0, 1fr) 142px;
+    gap: 20px;
+    align-items: center;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 22px 24px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .xruns-team-player-photo {
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: #e2e8f0;
+    border: 4px solid #ffffff;
+    box-shadow: 0 3px 10px rgba(15, 23, 42, 0.10);
+  }
+  .xruns-team-player-photo img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center center;
+    display: block;
+  }
+  .xruns-team-player-name {
+    color: #1e293b;
+    font-size: 25px;
+    font-weight: 900;
+    line-height: 1.08;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .xruns-team-player-value {
+    font-size: 16px;
+    font-weight: 900;
+  }
+  .xruns-team-player-values {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .xruns-team-player-value-chip {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 9px 10px;
+  }
+  .xruns-team-player-value-label {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .xruns-team-player-value-number {
+    font-size: 17px;
+    font-weight: 900;
+    margin-top: 4px;
+    line-height: 1;
+  }
+  .xruns-team-player-primary {
+    text-align: right;
+    color: #1e293b;
+  }
+  .xruns-team-player-primary-number {
+    font-size: 46px;
+    font-weight: 900;
+    line-height: 0.95;
+  }
+  .xruns-team-player-primary-unit {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 850;
+    letter-spacing: 0.07em;
+    line-height: 1.22;
+    margin-top: 8px;
+    text-transform: uppercase;
   }
 '
 }
@@ -4231,6 +4505,34 @@ xruns_player_component_rows <- function(components) {
   })
 }
 
+xruns_team_percentile_rows <- function(components) {
+  rows <- Filter(function(x) !is.null(x$pct) && !is.na(x$pct), components)
+  lapply(rows, function(x) {
+    color <- if (x$pct < 40) "#b91c1c" else "#047857"
+    tags$div(
+      class = "xruns-team-pct-row",
+      tags$div(class = "xruns-team-pct-name", x$label),
+      tags$div(
+        class = "xruns-team-pct-track",
+        tags$div(
+          class = "xruns-team-pct-fill",
+          style = sprintf("width: %d%%; background: %s;", x$pct, color)
+        ),
+        tags$div(
+          class = "xruns-team-pct-badge",
+          style = sprintf("left: %d%%; background: %s;", x$pct, color),
+          xruns_ordinal(x$pct)
+        )
+      ),
+      tags$div(
+        class = "xruns-team-pct-value",
+        style = sprintf("color: %s;", xruns_rating_color(x$value)),
+        xruns_fmt_signed(x$value)
+      )
+    )
+  })
+}
+
 xruns_card_data_label <- function(season, data_label = NULL) {
   label <- xruns_safe_text(data_label, fallback = "")
   if (nzchar(label)) label else paste0(season, " season data")
@@ -4240,11 +4542,11 @@ xruns_card_meta <- function(description, season, data_label = NULL) {
   paste(description, paste0("Data: ", xruns_card_data_label(season, data_label)), sep = " | ")
 }
 
-xruns_watermark <- function(season, base_url, data_label = NULL) {
+xruns_watermark <- function(season, base_url, data_label = NULL, card_type = "rankings") {
   tags$div(
     class = "xruns-share-watermark",
-    tags$span(paste0("xRuns ", season, " | ", xruns_card_data_label(season, data_label))),
-    tags$span(xruns_safe_text(base_url, "xruns"))
+    tags$span(class = "xruns-share-source-pill", paste0("xRuns · ", season, " MLB ratings")),
+    tags$span(xruns_display_base_url(base_url, card_type))
   )
 }
 
@@ -4262,8 +4564,8 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
   } else {
     pct_rank(overall, pp_pitcher_overalls)
   }
-  pct_text <- if (is.na(pct_value)) "Percentile unavailable" else paste0(pct_value, "th percentile")
   component_rows <- list(
+    list(label = "Overall", value = overall, pct = pct_value),
     list(label = "Hitting", value = row$Hitting[1], pct = pct_rank(row$Hitting[1], pp_hitter_hitting)),
     list(label = "Baserunning", value = row$Baserunning[1], pct = pct_rank(row$Baserunning[1], pp_hitter_br)),
     list(label = "Pitching", value = row$Pitching[1], pct = pct_rank(row$Pitching[1], pp_pitcher_pitching)),
@@ -4284,11 +4586,9 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
           paste(paste(team_abbrev, role_display, sep = " | "), paste0("Data: ", xruns_card_data_label(season, data_label)), sep = " | ")
         )
       ),
-      tags$img(
+      tags$div(
         class = "xruns-share-headshot",
-        src = xruns_headshot_url(row$player_id[1], width = 260),
-        crossorigin = "anonymous",
-        alt = xruns_safe_text(row$Player)
+        tags$img(src = xruns_headshot_url(row$player_id[1], width = 420), crossorigin = "anonymous", alt = xruns_safe_text(row$Player))
       )
     ),
     tags$div(
@@ -4301,8 +4601,7 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
           style = sprintf("color: %s;", xruns_rating_color(overall)),
           xruns_fmt_signed(overall)
         ),
-        tags$div(class = "xruns-share-sub", paste0(pct_text, " in ", season)),
-        tags$div(class = "xruns-share-sub", "Runs per 9 innings vs average")
+        tags$div(class = "xruns-share-sub", "Average Run Value Added per 9 Innings")
       ),
       tags$div(
         class = "xruns-share-stat",
@@ -4313,30 +4612,87 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
         )
       )
     ),
-    xruns_watermark(season, base_url, data_label)
+    xruns_watermark(season, base_url, data_label, card_type = "player")
   )
 }
 
-xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NULL) {
+xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NULL,
+                                  team_pool = NULL, recent_ranks = list(),
+                                  featured_players = list()) {
   logo_url <- xruns_safe_text(row$team_logo_espn, fallback = "")
-  ratings <- list(
-    list("Overall", row$overall[1], ranks$overall),
-    list("Offense", row$off_rating[1], ranks$offense),
-    list("Pitching", row$def_pitching[1], ranks$pitching),
-    list("Fielding", row$def_fld[1], ranks$fielding)
-  )
-  pills <- lapply(ratings, function(x) {
+  team_pool <- team_pool %||% row
+
+  mini_rank <- function(label, value) {
     tags$div(
-      class = "xruns-share-pill",
-      tags$div(class = "xruns-share-label", x[[1]]),
-      tags$div(
-        class = "xruns-share-pill-value",
-        style = sprintf("color: %s;", xruns_rating_color(x[[2]])),
-        xruns_fmt_signed(x[[2]])
-      ),
-      tags$div(class = "xruns-share-sub", paste0("Rank #", x[[3]], " of 30"))
+      class = "xruns-team-mini-rank",
+      tags$div(class = "xruns-team-mini-rank-label", label),
+      tags$div(class = "xruns-team-mini-rank-value", if (is.na(value)) "N/A" else paste0("#", value))
     )
-  })
+  }
+
+  team_components <- list(
+    list(label = "Offense", value = row$off_rating[1], pct = pct_rank(row$off_rating[1], team_pool$off_rating)),
+    list(label = "Pitching", value = row$def_pitching[1], pct = pct_rank(row$def_pitching[1], team_pool$def_pitching)),
+    list(label = "Defense", value = row$def_rating[1], pct = pct_rank(row$def_rating[1], team_pool$def_rating))
+  )
+
+  player_mini <- function(title, player_row, primary_col, primary_label, stat_specs = list()) {
+    if (is.null(player_row) || nrow(player_row) == 0) {
+      return(tags$div(
+        class = "xruns-team-leader-card",
+        tags$div(class = "xruns-team-player-photo"),
+        tags$div(
+          tags$div(class = "xruns-share-label", title),
+          tags$div(class = "xruns-team-player-name", "Unavailable")
+        )
+      ))
+    }
+    primary_value <- player_row[[primary_col]][1]
+    stat_chip <- function(label, value) {
+      tags$div(
+        class = "xruns-team-player-value-chip",
+        tags$div(class = "xruns-team-player-value-label", label),
+        tags$div(
+          class = "xruns-team-player-value-number",
+          style = sprintf("color: %s;", xruns_rating_color(value)),
+          xruns_fmt_signed(value)
+        )
+      )
+    }
+    stat_block <- if (length(stat_specs) > 0) {
+      tags$div(
+        class = "xruns-team-player-values",
+        tagList(lapply(stat_specs, function(x) stat_chip(x[[1]], player_row[[x[[2]]]][1])))
+      )
+    } else {
+      NULL
+    }
+    tags$div(
+      class = "xruns-team-leader-card",
+      tags$div(
+        class = "xruns-team-player-photo",
+        tags$img(
+          src = xruns_headshot_url(player_row$player_id[1], width = 220),
+          crossorigin = "anonymous",
+          alt = xruns_safe_text(player_row$Player)
+        )
+      ),
+      tags$div(
+        tags$div(class = "xruns-share-label", title),
+        tags$div(class = "xruns-team-player-name", xruns_safe_text(player_row$Player)),
+        stat_block
+      ),
+      tags$div(
+        class = "xruns-team-player-primary",
+        tags$div(
+          class = "xruns-team-player-primary-number",
+          style = sprintf("color: %s;", xruns_rating_color(primary_value)),
+          xruns_fmt_signed(primary_value)
+        ),
+        tags$div(class = "xruns-team-player-primary-unit", primary_label)
+      )
+    )
+  }
 
   tags$div(
     class = "xruns-share-card xruns-team-share-card",
@@ -4358,14 +4714,43 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
     tags$div(
       class = "xruns-share-body",
       tags$div(
-        class = "xruns-share-stat",
-        tags$div(class = "xruns-share-label", "Current Rank"),
-        tags$div(class = "xruns-share-big", style = "color: #1a365d;", paste0("#", ranks$overall)),
-        tags$div(class = "xruns-share-sub", paste0(xruns_safe_text(row$abbrev), " by overall team rating"))
+        class = "xruns-share-stat xruns-team-rank-card",
+        tags$div(
+          class = "xruns-team-rank-top",
+          tags$div(
+            tags$div(class = "xruns-share-label", "Season Rank"),
+            tags$div(class = "xruns-team-season-rank-value", paste0("#", ranks$overall))
+          ),
+          mini_rank("Last 30d", recent_ranks$rank_30d %||% NA_integer_),
+          mini_rank("Last 7d", recent_ranks$rank_7d %||% NA_integer_)
+        ),
+        tags$div(
+          class = "xruns-team-left-percentiles",
+          tags$div(class = "xruns-share-label", "Team Percentiles"),
+          tags$div(
+            class = "xruns-share-bars xruns-player-component-bars xruns-team-left-percentile-bars",
+            tagList(xruns_team_percentile_rows(team_components))
+          )
+        )
       ),
-      tags$div(class = "xruns-share-pills", tagList(pills))
+      tags$div(
+        class = "xruns-team-leader-stack",
+        player_mini(
+          "Best Hitter",
+          featured_players$hitter,
+          "Overall",
+          "run value / 9 innings",
+          list(c("Hit", "Hitting"), c("Field", "Fielding"), c("Run", "Baserunning"))
+        ),
+        player_mini(
+          "Best Pitcher",
+          featured_players$pitcher,
+          "Pitching",
+          "run value / 9 innings"
+        )
+      )
     ),
-    xruns_watermark(season, base_url, data_label)
+    xruns_watermark(season, base_url, data_label, card_type = "team")
   )
 }
 
@@ -4376,6 +4761,8 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
   rank_rows <- lapply(seq_len(nrow(top)), function(i) {
     row <- top[i, ]
     logo_url <- xruns_safe_text(row$team_logo_espn, fallback = "")
+    meta_name <- TEAM_META$team_name[match(row$abbrev[1], TEAM_META$abbrev)]
+    team_name <- if (length(meta_name) == 1 && !is.na(meta_name)) meta_name else xruns_safe_text(row$team_name)
     tags$div(
       class = "xruns-rank-row",
       tags$div(class = "xruns-rank-num", paste0("#", i)),
@@ -4384,7 +4771,7 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
       } else {
         tags$div(class = "xruns-rank-logo")
       },
-      tags$div(class = "xruns-rank-team", xruns_safe_text(row$team_name)),
+      tags$div(class = "xruns-rank-team", team_name),
       tags$div(
         class = "xruns-rank-value",
         style = sprintf("color: %s;", xruns_rating_color(row$overall[1])),
@@ -4431,7 +4818,7 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
         leader("Best Fielding", "def_fld")
       )
     ),
-    xruns_watermark(season, base_url, data_label)
+    xruns_watermark(season, base_url, data_label, card_type = "rankings")
   )
 }
 
@@ -4485,9 +4872,20 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL) {
     tags$div(
       class = "xruns-matchup-pitcher",
       style = sprintf("border-left: 5px solid %s;", color),
-      tags$div(class = "xruns-share-label", paste(abbrev, "Starter")),
-      tags$div(class = "xruns-matchup-pitcher-name", xruns_safe_text(pitcher$player)),
-      tags$div(class = "xruns-share-sub", sprintf("Pitching value: %+.2f runs/game", pitcher$final_rating[1] * PA_PER_GAME))
+      tags$div(
+        class = "xruns-matchup-pitcher-photo",
+        tags$img(
+          src = xruns_headshot_url(pitcher$player_id[1], width = 220),
+          crossorigin = "anonymous",
+          alt = xruns_safe_text(pitcher$player)
+        )
+      ),
+      tags$div(
+        class = "xruns-matchup-pitcher-copy",
+        tags$div(class = "xruns-share-label", paste(abbrev, "Starter")),
+        tags$div(class = "xruns-matchup-pitcher-name", xruns_safe_text(pitcher$player)),
+        tags$div(class = "xruns-share-sub", sprintf("%+.2f pitching runs/game", pitcher$final_rating[1] * PA_PER_GAME))
+      )
     )
   }
 
@@ -4553,7 +4951,7 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL) {
         )
       )
     ),
-    xruns_watermark(season, base_url, data_label)
+    xruns_watermark(season, base_url, data_label, card_type = "matchup")
   )
 }
 
@@ -5840,10 +6238,9 @@ server <- function(input, output, session) {
     )
   })
   
-  # ---- Team table reactive — responds to year AND time period ----------------
-  current_team_tbl <- reactive({
+  # ---- Team table helper — supports season and rolling windows ---------------
+  team_tbl_for_period <- function(tp = "season") {
     yc <- current_year()
-    tp <- input$time_period %||% "season"
     
     has_snaps <- yc %in% names(all_snapshots_by_year) &&
       length(all_snapshots_by_year[[yc]]) > 1
@@ -5874,6 +6271,11 @@ server <- function(input, output, session) {
       build_team_ratings_team_mode(year_data, models),
       error = function(e) team_tbl_by_year[[yc]]
     )
+  }
+
+  # ---- Team table reactive — responds to year AND time period ----------------
+  current_team_tbl <- reactive({
+    team_tbl_for_period(input$time_period %||% "season")
   })
 
   output$client_rankings_share_card <- renderUI({
@@ -7095,20 +7497,45 @@ server <- function(input, output, session) {
   })
 
   output$client_team_share_card <- renderUI({
-    row <- selected_team_row()
-    tt <- current_team_tbl()
+    sel <- input$tb_team %||% "LAD"
+    tt <- team_tbl_for_period("season")
+    row <- tt %>% dplyr::filter(abbrev == sel)
     if (is.null(row) || nrow(row) == 0) return(NULL)
-    rank_for <- function(metric) {
-      rank_val <- which(dplyr::arrange(tt, dplyr::desc(.data[[metric]]))$abbrev == row$abbrev[1])
+    row <- row[1, ]
+    rank_for <- function(tbl, metric) {
+      if (is.null(tbl) || nrow(tbl) == 0 || !metric %in% names(tbl)) return(NA_integer_)
+      rank_val <- which(dplyr::arrange(tbl, dplyr::desc(.data[[metric]]))$abbrev == row$abbrev[1])
       if (length(rank_val) == 0) NA_integer_ else rank_val
     }
     ranks <- list(
-      overall = rank_for("overall"),
-      offense = rank_for("off_rating"),
-      pitching = rank_for("def_pitching"),
-      fielding = rank_for("def_fld")
+      overall = rank_for(tt, "overall"),
+      offense = rank_for(tt, "off_rating"),
+      pitching = rank_for(tt, "def_pitching"),
+      fielding = rank_for(tt, "def_fld")
     )
     if (is.na(ranks$overall)) ranks$overall <- row$rank[1]
+    recent_ranks <- list(
+      rank_30d = rank_for(team_tbl_for_period("30d"), "overall"),
+      rank_7d = rank_for(team_tbl_for_period("7d"), "overall")
+    )
+    pv <- current_players_view()
+    team_players <- if (!is.null(pv)) pv %>% dplyr::filter(Team == row$abbrev[1]) else NULL
+    if (!is.null(team_players) && nrow(team_players) > 0) {
+      dual_player_ids <- team_players$player_id[team_players$Role == "Player"]
+      team_players <- team_players %>%
+        dplyr::filter(Role == "Player" | (Role %in% c("Hitter", "Pitcher") & !(player_id %in% dual_player_ids)))
+      best_hitter <- team_players %>%
+        dplyr::filter(!is.na(Hitting)) %>%
+        dplyr::arrange(dplyr::desc(Hitting)) %>%
+        dplyr::slice_head(n = 1)
+      best_pitcher <- team_players %>%
+        dplyr::filter(!is.na(Pitching)) %>%
+        dplyr::arrange(dplyr::desc(Pitching)) %>%
+        dplyr::slice_head(n = 1)
+    } else {
+      best_hitter <- NULL
+      best_pitcher <- NULL
+    }
     tags$div(
       `data-filename` = paste0("xruns-team-", xruns_slug(row$abbrev), "-", current_year(), ".png"),
       xruns_team_share_card(
@@ -7116,7 +7543,10 @@ server <- function(input, output, session) {
         ranks = ranks,
         season = current_year(),
         base_url = xruns_current_base_url(session),
-        data_label = current_share_data_label()
+        data_label = current_share_data_label(),
+        team_pool = tt,
+        recent_ranks = recent_ranks,
+        featured_players = list(hitter = best_hitter, pitcher = best_pitcher)
       )
     )
   })
