@@ -3879,7 +3879,7 @@ xruns_matchup_route <- function(team_a, team_b, starter_a = NULL, starter_b = NU
   xruns_route_hash(matchup)
 }
 
-xruns_display_base_url <- function(base_url, card_type = "rankings") {
+xruns_display_base_url <- function(base_url, card_type = "rankings", route = NULL) {
   url <- xruns_safe_text(base_url, fallback = "xruns")
   if (grepl("(^|//)(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(:|/|$)", url)) {
     return("Dashboard preview")
@@ -3887,16 +3887,22 @@ xruns_display_base_url <- function(base_url, card_type = "rankings") {
   host <- sub("^https?://", "", url)
   host <- sub("/.*$", "", host)
   host <- sub("^www\\.", "", host)
-  path <- switch(
-    card_type,
-    "matchup" = "matchup-simulator",
-    "team" = "team-profile",
-    "player" = "player-profile",
-    "rankings" = "team-rankings",
-    card_type
-  )
-  label <- paste0(host, "/", path)
-  if (nchar(label) > 58) paste0(substr(label, 1, 55), "...") else label
+
+  route <- xruns_safe_text(route, fallback = "")
+  if (!nzchar(route)) {
+    route <- switch(
+      card_type,
+      "matchup" = xruns_route_hash("matchup-simulator"),
+      "team" = xruns_route_hash("team-profile"),
+      "player" = xruns_route_hash("player-profile"),
+      "rankings" = xruns_route_hash("team-rankings"),
+      xruns_route_hash(card_type)
+    )
+  }
+
+  route <- sub("^/+", "", route)
+  label <- paste0(host, "/", route)
+  if (nchar(label) > 72) paste0(substr(label, 1, 69), "...") else label
 }
 
 xruns_share_card_css <- function() {
@@ -4646,15 +4652,15 @@ xruns_card_meta <- function(description, season, data_label = NULL) {
   paste(description, paste0("Data: ", xruns_card_data_label(season, data_label)), sep = " | ")
 }
 
-xruns_watermark <- function(season, base_url, data_label = NULL, card_type = "rankings") {
+xruns_watermark <- function(season, base_url, data_label = NULL, card_type = "rankings", route = NULL) {
   tags$div(
     class = "xruns-share-watermark",
     tags$span(class = "xruns-share-source-pill", paste0("xRuns · ", season, " MLB ratings")),
-    tags$span(xruns_display_base_url(base_url, card_type))
+    tags$span(xruns_display_base_url(base_url, card_type, route))
   )
 }
 
-xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
+xruns_player_share_card <- function(row, season, base_url, data_label = NULL, route = NULL) {
   role <- xruns_safe_text(row$Role)
   role_display <- switch(role,
     "Player" = "Two-Way Player",
@@ -4716,13 +4722,13 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL) {
         )
       )
     ),
-    xruns_watermark(season, base_url, data_label, card_type = "player")
+    xruns_watermark(season, base_url, data_label, card_type = "player", route = route)
   )
 }
 
 xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NULL,
                                   team_pool = NULL, recent_ranks = list(),
-                                  featured_players = list()) {
+                                  featured_players = list(), route = NULL) {
   logo_url <- xruns_safe_text(row$team_logo_espn, fallback = "")
   team_pool <- team_pool %||% row
 
@@ -4854,11 +4860,11 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
         )
       )
     ),
-    xruns_watermark(season, base_url, data_label, card_type = "team")
+    xruns_watermark(season, base_url, data_label, card_type = "team", route = route)
   )
 }
 
-xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
+xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL, route = NULL) {
   top <- tt %>%
     dplyr::arrange(dplyr::desc(overall)) %>%
     dplyr::slice_head(n = 5)
@@ -4922,11 +4928,11 @@ xruns_rankings_share_card <- function(tt, season, base_url, data_label = NULL) {
         leader("Best Fielding", "def_fld")
       )
     ),
-    xruns_watermark(season, base_url, data_label, card_type = "rankings")
+    xruns_watermark(season, base_url, data_label, card_type = "rankings", route = route)
   )
 }
 
-xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL) {
+xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL, route = NULL) {
   ta <- res$ta
   tb <- res$tb
   col_a <- xruns_team_color(ta)
@@ -5055,7 +5061,7 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL) {
         )
       )
     ),
-    xruns_watermark(season, base_url, data_label, card_type = "matchup")
+    xruns_watermark(season, base_url, data_label, card_type = "matchup", route = route)
   )
 }
 
@@ -6038,7 +6044,8 @@ server <- function(input, output, session) {
         row = row,
         season = current_year(),
         base_url = xruns_current_base_url(session),
-        data_label = paste0(current_year(), " season data")
+        data_label = paste0(current_year(), " season data"),
+        route = xruns_player_profile_route(row)
       )
     )
   })
@@ -6475,7 +6482,8 @@ server <- function(input, output, session) {
         tt = tt,
         season = current_year(),
         base_url = xruns_current_base_url(session),
-        data_label = current_share_data_label()
+        data_label = current_share_data_label(),
+        route = xruns_route_hash("team-rankings")
       )
     )
   })
@@ -7338,7 +7346,8 @@ server <- function(input, output, session) {
         res = res,
         season = current_year(),
         base_url = xruns_current_base_url(session),
-        data_label = current_share_data_label()
+        data_label = current_share_data_label(),
+        route = xruns_route_hash("matchup-simulator")
       )
     )
   })
@@ -7768,7 +7777,8 @@ server <- function(input, output, session) {
         data_label = current_share_data_label(),
         team_pool = tt,
         recent_ranks = recent_ranks,
-        featured_players = list(hitter = best_hitter, pitcher = best_pitcher)
+        featured_players = list(hitter = best_hitter, pitcher = best_pitcher),
+        route = xruns_team_profile_route(row$abbrev[1])
       )
     )
   })
