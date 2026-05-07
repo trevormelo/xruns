@@ -28,6 +28,16 @@
 # solely as an out-of-model validation (Standings Check tab).
 # =============================================================================
 
+# =============================================================================
+# MASTER TOGGLE — current-season-only mode
+# -----------------------------------------------------------------------------
+# Set to TRUE  → team ratings and matchup simulator use ONLY the current
+#                 season's data (no multi-year recency weighting).
+# Set to FALSE → multi-year recency weighting is applied as normal (default).
+# Player leaderboards and year-to-year profile history are unaffected either way.
+# =============================================================================
+ONLY_CURRENT_SEASON <- TRUE
+
 # ---- packages ----------------------------------------------------------------
 library(shiny)
 library(bslib)
@@ -1561,6 +1571,10 @@ for (yc in names(team_tbl_by_year)) {
   # ---- patch most-recent player-mode year with multi-year weighted rates -----
   # Preserve single-season values; team ratings will use weighted, player tab
   # uses single-season values.
+  # When ONLY_CURRENT_SEASON = TRUE the multi-year blend is skipped entirely —
+  # adj_pred_runs_per_pa stays as-is (current season only) for both team ratings
+  # and the matchup simulator. Single-season columns are still added so that
+  # build_player_view(use_single_season = TRUE) continues to work normally.
   enriched_years[[most_recent_player_yr]]$batters <-
     enriched_years[[most_recent_player_yr]]$batters %>%
     dplyr::mutate(
@@ -1568,32 +1582,46 @@ for (yc in names(team_tbl_by_year)) {
       single_season_br_per_pa   = br_per_pa,
       single_season_fld_per_out = fld_per_out
     ) %>%
-    dplyr::left_join(bat_weighted_ratings, by = "player_id") %>%
-    dplyr::left_join(br_weighted_ratings,  by = "player_id") %>%
-    dplyr::left_join(fld_weighted_ratings, by = "player_id") %>%
-    dplyr::mutate(
-      adj_pred_runs_per_pa = dplyr::coalesce(weighted_rating,      adj_pred_runs_per_pa),
-      br_per_pa            = dplyr::coalesce(weighted_br_per_pa,   br_per_pa),
-      fld_per_out          = dplyr::coalesce(weighted_fld_per_out, fld_per_out),
-      br_runs              = br_per_pa   * pa_rv,
-      fld_runs             = fld_per_out * fld_outs
-    ) %>%
-    dplyr::select(-weighted_rating, -weighted_br_per_pa, -weighted_fld_per_out)
-  
+    {
+      if (ONLY_CURRENT_SEASON) {
+        # No multi-year blending — keep current-season rates unchanged.
+        .
+      } else {
+        dplyr::left_join(., bat_weighted_ratings, by = "player_id") %>%
+        dplyr::left_join(br_weighted_ratings,  by = "player_id") %>%
+        dplyr::left_join(fld_weighted_ratings, by = "player_id") %>%
+        dplyr::mutate(
+          adj_pred_runs_per_pa = dplyr::coalesce(weighted_rating,      adj_pred_runs_per_pa),
+          br_per_pa            = dplyr::coalesce(weighted_br_per_pa,   br_per_pa),
+          fld_per_out          = dplyr::coalesce(weighted_fld_per_out, fld_per_out),
+          br_runs              = br_per_pa   * pa_rv,
+          fld_runs             = fld_per_out * fld_outs
+        ) %>%
+        dplyr::select(-weighted_rating, -weighted_br_per_pa, -weighted_fld_per_out)
+      }
+    }
+
   enriched_years[[most_recent_player_yr]]$pitchers <-
     enriched_years[[most_recent_player_yr]]$pitchers %>%
     dplyr::mutate(
       single_season_adj_pred    = adj_pred_runs_per_pa,
       single_season_fld_per_out = fld_per_out
     ) %>%
-    dplyr::left_join(pit_weighted_ratings, by = "player_id") %>%
-    dplyr::left_join(fld_weighted_ratings, by = "player_id") %>%
-    dplyr::mutate(
-      adj_pred_runs_per_pa = dplyr::coalesce(weighted_rating,      adj_pred_runs_per_pa),
-      fld_per_out          = dplyr::coalesce(weighted_fld_per_out, fld_per_out),
-      fld_runs             = fld_per_out * fld_outs
-    ) %>%
-    dplyr::select(-weighted_rating, -weighted_fld_per_out)
+    {
+      if (ONLY_CURRENT_SEASON) {
+        # No multi-year blending — keep current-season rates unchanged.
+        .
+      } else {
+        dplyr::left_join(., pit_weighted_ratings, by = "player_id") %>%
+        dplyr::left_join(fld_weighted_ratings, by = "player_id") %>%
+        dplyr::mutate(
+          adj_pred_runs_per_pa = dplyr::coalesce(weighted_rating,      adj_pred_runs_per_pa),
+          fld_per_out          = dplyr::coalesce(weighted_fld_per_out, fld_per_out),
+          fld_runs             = fld_per_out * fld_outs
+        ) %>%
+        dplyr::select(-weighted_rating, -weighted_fld_per_out)
+      }
+    }
   
   # Rebuild tables for the most recent player-mode year.
   # Team ratings: only rebuild from player rows if there is NO team-level file for
@@ -1693,16 +1721,21 @@ for (yc in names(team_tbl_by_year)) {
 }
 
 # For the matchup simulator pitcher dropdowns, use the most recent player-mode
-# year's pitchers (which have multi-year weighted ratings).
+# year's pitchers. When ONLY_CURRENT_SEASON = TRUE, use the current-season
+# adj_pred_runs_per_pa directly (no multi-year blend). Otherwise blend with
+# the recency-weighted ratings computed above.
 mp_current_pitchers <- enriched_years[[most_recent_player_yr]]$pitchers %>%
   dplyr::select(player_id, player, team_id, abbrev, pa_rv, adj_pred_runs_per_pa) %>%
-  dplyr::left_join(
-    mp_pitcher_ratings %>% dplyr::select(player_id, weighted_rating),
-    by = "player_id"
-  ) %>%
-  dplyr::mutate(
-    final_rating = dplyr::coalesce(weighted_rating, adj_pred_runs_per_pa)
-  ) %>%
+  {
+    if (ONLY_CURRENT_SEASON) {
+      dplyr::mutate(., final_rating = adj_pred_runs_per_pa)
+    } else {
+      dplyr::left_join(., mp_pitcher_ratings %>% dplyr::select(player_id, weighted_rating),
+                       by = "player_id") %>%
+      dplyr::mutate(final_rating = dplyr::coalesce(weighted_rating, adj_pred_runs_per_pa)) %>%
+      dplyr::select(-weighted_rating)
+    }
+  } %>%
   dplyr::arrange(abbrev, dplyr::desc(pa_rv))
 
 # Ordered team choices for the matchup dropdowns (all 30 MLB teams).
