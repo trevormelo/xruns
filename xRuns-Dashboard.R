@@ -4861,7 +4861,7 @@ xruns_team_share_card <- function(row, ranks, season, base_url, data_label = NUL
         tags$div(
           class = "xruns-team-rank-top",
           tags$div(
-            tags$div(class = "xruns-share-label", "Season Rank"),
+            tags$div(class = "xruns-share-label", "Overall Rank"),
             tags$div(class = "xruns-team-season-rank-value", paste0("#", ranks$overall))
           ),
           mini_rank("Last 30d", recent_ranks$rank_30d %||% NA_integer_),
@@ -4974,6 +4974,7 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL, r
   logo_b <- xruns_safe_text(tb$team_logo_espn, fallback = "")
   pct_a <- round(res$p_a_wins * 100, 1)
   pct_b <- round(100 - pct_a, 1)
+  driver_tbl <- res$matchup_drivers %||% tibble::tibble()
 
   team_block <- function(row, logo_url) {
     tags$div(
@@ -5032,6 +5033,19 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL, r
     )
   }
 
+  driver_rows <- if (!is.null(driver_tbl) && nrow(driver_tbl) > 0) {
+    lapply(seq_len(min(3, nrow(driver_tbl))), function(i) {
+      row <- driver_tbl[i, ]
+      tags$div(
+        class = "xruns-matchup-driver-row",
+        tags$span(class = "xruns-matchup-driver-component", xruns_safe_text(row$Component)),
+        tags$span(class = "xruns-matchup-driver-edge", xruns_safe_text(row$Summary))
+      )
+    })
+  } else {
+    list()
+  }
+
   tags$div(
     class = "xruns-share-card xruns-matchup-share-card",
     tags$div(
@@ -5087,6 +5101,13 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL, r
             )
           )
         ),
+        if (length(driver_rows) > 0) {
+          tags$div(
+            class = "xruns-matchup-score-list",
+            tags$div(class = "xruns-share-label", "Key Edges"),
+            tagList(driver_rows)
+          )
+        },
         tags$div(
           class = "xruns-matchup-pitchers",
           pitcher_row(xruns_safe_text(ta$abbrev), res$sa, col_a),
@@ -5097,6 +5118,656 @@ xruns_matchup_share_card <- function(res, season, base_url, data_label = NULL, r
     xruns_watermark(season, base_url, data_label, card_type = "matchup", route = route)
   )
 }
+
+xruns_team_table_for_snapshot <- function(snapshot, models) {
+  if (is.null(snapshot)) return(NULL)
+  tryCatch(
+    build_team_ratings_team_mode(snapshot, models),
+    error = function(e) NULL
+  )
+}
+
+xruns_team_table_for_window <- function(yc, window_days, models) {
+  snapshots <- all_snapshots_by_year[[as.character(yc)]]
+  if (is.null(snapshots) || length(snapshots) == 0) return(NULL)
+  year_data <- compute_window_data(snapshots, window_days)
+  xruns_team_table_for_snapshot(year_data, models)
+}
+
+xruns_rank_deltas <- function(yc, models, window_days = 1) {
+  snapshots <- all_snapshots_by_year[[as.character(yc)]]
+  if (is.null(snapshots) || length(snapshots) < 2) return(tibble::tibble())
+
+  d_strs <- names(snapshots)
+  latest_d <- d_strs[length(d_strs)]
+  dates <- as.Date(d_strs)
+  cutoff <- as.Date(latest_d) - window_days
+  older_candidates <- d_strs[dates <= cutoff]
+  older_d <- if (length(older_candidates) == 0) d_strs[1] else older_candidates[length(older_candidates)]
+
+  latest_tbl <- xruns_team_table_for_snapshot(snapshots[[latest_d]], models)
+  older_tbl  <- xruns_team_table_for_snapshot(snapshots[[older_d]], models)
+  if (is.null(latest_tbl) || is.null(older_tbl)) return(tibble::tibble())
+
+  latest_tbl %>%
+    dplyr::select(abbrev, team_name, team_logo_espn, rank, overall,
+                  off_rating, def_rating, def_pitching, def_fld) %>%
+    dplyr::rename(latest_rank = rank, latest_overall = overall) %>%
+    dplyr::left_join(
+      older_tbl %>%
+        dplyr::select(abbrev, old_rank = rank, old_overall = overall),
+      by = "abbrev"
+    ) %>%
+    dplyr::mutate(
+      rank_delta = old_rank - latest_rank,
+      rating_delta = latest_overall - old_overall,
+      latest_date = latest_d,
+      old_date = older_d,
+      window_label = paste0(format(as.Date(older_d), "%b %d"), " to ",
+                            format(as.Date(latest_d), "%b %d"))
+    ) %>%
+    dplyr::filter(is.finite(rank_delta), is.finite(rating_delta))
+}
+
+xruns_standings_gap <- function(tt) {
+  if (is.null(tt) || nrow(tt) == 0) return(tibble::tibble())
+  if (!all(c("W", "L", "W-L%") %in% names(tt))) return(tibble::tibble())
+
+  tt %>%
+    dplyr::mutate(
+      standings_rank = rank(-`W-L%`, ties.method = "min"),
+      xruns_rank = rank,
+      standings_gap = standings_rank - xruns_rank
+    ) %>%
+    dplyr::filter(is.finite(standings_gap)) %>%
+    dplyr::arrange(dplyr::desc(abs(standings_gap)))
+}
+
+xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
+  deltas_1d <- xruns_rank_deltas(yc, models, 1)
+  hot_7d <- xruns_team_table_for_window(yc, 7, models)
+  gaps <- xruns_standings_gap(season_tbl)
+
+  make_rows <- function(df, title, kicker, value_fn, body_fn, n = 3) {
+    if (is.null(df) || nrow(df) == 0) return(tibble::tibble())
+    df %>%
+      dplyr::slice_head(n = n) %>%
+      dplyr::mutate(
+        card_title = title,
+        card_kicker = kicker,
+        card_value = value_fn(.),
+        card_body = body_fn(.),
+        route = vapply(abbrev, xruns_team_profile_route, character(1))
+      ) %>%
+      dplyr::select(card_title, card_kicker, abbrev, team_name,
+                    team_logo_espn, card_value, card_body, route)
+  }
+
+  movers <- if (!is.null(deltas_1d) && nrow(deltas_1d) > 0) {
+    deltas_1d %>%
+      dplyr::arrange(dplyr::desc(rank_delta), dplyr::desc(rating_delta)) %>%
+      make_rows(
+        "Biggest Movers",
+        "Since previous snapshot",
+        function(x) ifelse(x$rank_delta >= 0, paste0("+", x$rank_delta, " spots"),
+                           paste0(x$rank_delta, " spots")),
+        function(x) sprintf("Now #%d after a %+.2f rating move.", x$latest_rank, x$rating_delta)
+      )
+  } else {
+    tibble::tibble()
+  }
+
+  hot <- if (!is.null(hot_7d) && nrow(hot_7d) > 0) {
+    hot_7d %>%
+      dplyr::arrange(dplyr::desc(overall)) %>%
+      make_rows(
+        "Best Last 7 Days",
+        "Recent form",
+        function(x) sprintf("%+.2f", x$overall),
+        function(x) sprintf("Run-value pace over the current 7-day window.")
+      )
+  } else {
+    tibble::tibble()
+  }
+
+  cold <- if (!is.null(hot_7d) && nrow(hot_7d) > 0) {
+    hot_7d %>%
+      dplyr::arrange(overall) %>%
+      make_rows(
+        "Worst Last 7 Days",
+        "Recent form",
+        function(x) sprintf("%+.2f", x$overall),
+        function(x) sprintf("A rough expected-performance week by xRuns.")
+      )
+  } else {
+    tibble::tibble()
+  }
+
+  standings <- if (!is.null(gaps) && nrow(gaps) > 0) {
+    gaps %>%
+      dplyr::arrange(dplyr::desc(standings_gap)) %>%
+      make_rows(
+        "Standings Are Lying",
+        "xRuns vs. record",
+        function(x) paste0("+", x$standings_gap, " rank gap"),
+        function(x) sprintf("xRuns #%d, standings #%d.", x$xruns_rank, x$standings_rank),
+        n = 3
+      )
+  } else {
+    tibble::tibble()
+  }
+
+  dplyr::bind_rows(movers, hot, cold, standings)
+}
+
+xruns_daily_share_card <- function(daily_rows, season, base_url, data_label = NULL, route = NULL) {
+  if (is.null(daily_rows) || nrow(daily_rows) == 0) return(NULL)
+  rows <- daily_rows %>% dplyr::slice_head(n = 8)
+  grouped <- split(rows, rows$card_title)
+
+  module_tags <- lapply(names(grouped), function(title) {
+    group <- grouped[[title]] %>% dplyr::slice_head(n = 2)
+    item_tags <- lapply(seq_len(nrow(group)), function(i) {
+      row <- group[i, ]
+      tags$div(
+        class = "xruns-daily-share-row",
+        if (!is.na(row$team_logo_espn) && nzchar(row$team_logo_espn)) {
+          tags$img(class = "xruns-daily-share-logo", src = row$team_logo_espn,
+                   crossorigin = "anonymous", alt = xruns_safe_text(row$abbrev))
+        },
+        tags$div(
+          tags$div(class = "xruns-daily-share-team", xruns_safe_text(row$team_name)),
+          tags$div(class = "xruns-share-sub", xruns_safe_text(row$card_body))
+        ),
+        tags$div(class = "xruns-daily-share-value", xruns_safe_text(row$card_value))
+      )
+    })
+    tags$div(
+      class = "xruns-share-stat xruns-daily-share-module",
+      tags$div(class = "xruns-share-label", title),
+      tagList(item_tags)
+    )
+  })
+
+  tags$div(
+    class = "xruns-share-card xruns-daily-share-card",
+    tags$div(
+      class = "xruns-share-band",
+      tags$div(
+        tags$div(class = "xruns-share-brand", "xRuns"),
+        tags$div(class = "xruns-share-kicker", "Today in xRuns"),
+        tags$div(class = "xruns-share-title", "Daily Signal Board"),
+        tags$div(
+          class = "xruns-share-meta",
+          xruns_card_meta("Movers, recent form, and expected-performance edges", season, data_label)
+        )
+      )
+    ),
+    tags$div(class = "xruns-share-body xruns-daily-share-body", tagList(module_tags)),
+    xruns_watermark(season, base_url, data_label, card_type = "daily", route = route)
+  )
+}
+
+xruns_holdout_model_record <- function() {
+  completed_years <- names(player_raw_years)[vapply(player_raw_years, function(x) {
+    !is.null(x$standings) && nrow(x$standings) > 0
+  }, logical(1))]
+  completed_years <- sort(as.integer(completed_years))
+  rows <- list()
+
+  for (test_year in completed_years) {
+    train_years <- completed_years[completed_years < test_year]
+    if (length(train_years) == 0) next
+    train_list <- player_raw_years[as.character(train_years)]
+    test_data <- player_raw_years[[as.character(test_year)]]
+    row <- tryCatch({
+      holdout_models <- fit_pooled_models(train_list)
+      holdout_enriched <- enrich_year(test_data, holdout_models)
+      holdout_tbl <- build_team_ratings(holdout_enriched)
+      sc <- make_standings_row(as.character(test_year), holdout_tbl)
+      if (is.null(sc) || nrow(sc) == 0) {
+        NULL
+      } else {
+        data.frame(
+          Season = test_year,
+          Train_Through = max(train_years),
+          Teams = nrow(sc),
+          Pearson_r = round(cor(sc$overall, sc$rdiff_per_game), 3),
+          Spearman_rho = round(cor(sc$overall, sc$rdiff_per_game, method = "spearman"), 3),
+          RMSE = round(sqrt(mean((sc$overall - sc$rdiff_per_game)^2)), 3),
+          stringsAsFactors = FALSE
+        )
+      }
+    }, error = function(e) NULL)
+    if (!is.null(row)) rows[[as.character(test_year)]] <- row
+  }
+
+  if (length(rows) == 0) return(NULL)
+  dplyr::bind_rows(rows)
+}
+
+xruns_matchup_drivers <- function(res) {
+  if (is.null(res)) return(tibble::tibble())
+  edge_tbl <- tibble::tibble(
+    Component = c("Offense", "Starter", "Bullpen / team pitching", "Fielding"),
+    Edge = c(
+      res$ta$off_rating[1] - res$tb$off_rating[1],
+      res$sa_rpg - res$sb_rpg,
+      res$sa_bp_rpg - res$sb_bp_rpg,
+      res$ta$def_fld[1] - res$tb$def_fld[1]
+    )
+  )
+  edge_tbl %>%
+    dplyr::mutate(
+      Favors = ifelse(Edge >= 0, res$ta$abbrev[1], res$tb$abbrev[1]),
+      AbsEdge = abs(Edge),
+      Summary = sprintf("%s by %.2f runs/game", Favors, AbsEdge)
+    ) %>%
+    dplyr::arrange(dplyr::desc(AbsEdge))
+}
+
+preview_css <- HTML("
+  .xruns-preview-section {
+    background: #ffffff;
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-radius: 8px;
+    margin: 0 0 14px 0;
+    box-shadow: 0 8px 24px rgba(21, 25, 34, 0.05);
+    overflow: hidden;
+  }
+  .xruns-intro-compact {
+    background: #ffffff;
+    border: 1px solid rgba(21, 25, 34, 0.10);
+    border-top: 4px solid #b2342a;
+    border-radius: 8px;
+    margin: 0 0 12px 0;
+    box-shadow: 0 8px 24px rgba(21, 25, 34, 0.05);
+    overflow: hidden;
+  }
+  .xruns-intro-compact summary {
+    list-style: none;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: center;
+    padding: 13px 18px 12px;
+  }
+  .xruns-intro-compact summary::-webkit-details-marker {
+    display: none;
+  }
+  .xruns-intro-compact summary:focus-visible {
+    outline: 3px solid rgba(36, 92, 143, 0.22);
+    outline-offset: -3px;
+  }
+  .xruns-intro-kicker {
+    color: #b2342a;
+    font-size: 0.66rem;
+    font-weight: 850;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .xruns-intro-promise {
+    color: #151922;
+    font-size: 0.98rem;
+    font-weight: 850;
+    line-height: 1.32;
+  }
+  .xruns-intro-toggle {
+    color: #1a365d;
+    border: 1px solid #cfd6e2;
+    background: #f8fafc;
+    border-radius: 999px;
+    padding: 7px 11px;
+    font-size: 0.76rem;
+    font-weight: 850;
+    white-space: nowrap;
+  }
+  .xruns-intro-toggle:after {
+    content: '+';
+    margin-left: 7px;
+    font-weight: 900;
+  }
+  .xruns-intro-compact[open] .xruns-intro-toggle:after {
+    content: '-';
+  }
+  .xruns-intro-body {
+    border-top: 1px solid #e5e8ef;
+    padding: 12px 18px 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+    gap: 12px;
+    color: #485264;
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+  .xruns-intro-body p {
+    margin: 0;
+  }
+  .xruns-preview-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid #e5e8ef;
+    flex-wrap: wrap;
+  }
+  .xruns-preview-title {
+    flex: 1;
+    min-width: 220px;
+    color: #151922;
+    font-size: 1.14rem;
+    font-weight: 900;
+    letter-spacing: 0;
+    line-height: 1.15;
+  }
+  .xruns-preview-sub {
+    color: #667085;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    margin-top: 4px;
+    font-weight: 600;
+  }
+  .xruns-today-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    padding: 14px 18px 18px;
+  }
+  .xruns-today-card,
+  .xruns-player-spot-card,
+  .xruns-driver-card {
+    border: 1px solid #d9dee8;
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 12px;
+    min-width: 0;
+  }
+  .xruns-today-card-label,
+  .xruns-player-spot-label,
+  .xruns-driver-label {
+    color: #667085;
+    font-size: 0.66rem;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 9px;
+  }
+  .xruns-today-row,
+  .xruns-player-spot-main {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 0;
+    border-top: 1px solid #e8edf4;
+  }
+  .xruns-today-row:first-of-type,
+  .xruns-player-spot-main {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .xruns-today-logo,
+  .xruns-player-spot-logo {
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+  }
+  .xruns-today-team,
+  .xruns-player-spot-name {
+    color: #151922;
+    font-size: 0.82rem;
+    font-weight: 850;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .xruns-today-body,
+  .xruns-player-spot-sub {
+    color: #667085;
+    font-size: 0.69rem;
+    line-height: 1.35;
+    margin-top: 2px;
+  }
+  .xruns-today-value,
+  .xruns-player-spot-value {
+    color: #1a365d;
+    font-size: 0.78rem;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .xruns-player-spot-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .xruns-driver-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .xruns-driver-value {
+    color: #151922;
+    font-size: 1rem;
+    font-weight: 900;
+    line-height: 1.2;
+  }
+  .xruns-driver-note {
+    color: #667085;
+    font-size: 0.73rem;
+    line-height: 1.35;
+    margin-top: 4px;
+  }
+  .xruns-model-record-note {
+    color: #475569;
+    font-size: 13.5px;
+    line-height: 1.65;
+    margin: 0 0 12px 0;
+  }
+  .xruns-daily-share-body {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    padding: 24px 38px 72px;
+    align-items: start;
+  }
+  .xruns-daily-share-module {
+    min-height: 0;
+    padding: 17px 18px 16px;
+    overflow: hidden;
+  }
+  .xruns-daily-share-card .xruns-share-band {
+    padding: 26px 42px 24px;
+  }
+  .xruns-daily-share-card .xruns-share-title {
+    font-size: 46px;
+    line-height: 1;
+  }
+  .xruns-daily-share-card .xruns-share-meta {
+    font-size: 18px;
+    margin-top: 8px;
+  }
+  .xruns-daily-share-card .xruns-share-label {
+    font-size: 14px;
+    line-height: 1.15;
+    padding-bottom: 11px;
+    border-bottom: 1px solid #e5e8ef;
+  }
+  .xruns-daily-share-row {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    gap: 11px;
+    align-items: center;
+    padding: 13px 0 0;
+    border-top: 1px solid #e5e8ef;
+  }
+  .xruns-daily-share-row:first-of-type {
+    border-top: 0;
+  }
+  .xruns-daily-share-logo {
+    width: 38px;
+    height: 38px;
+    object-fit: contain;
+  }
+  .xruns-daily-share-team {
+    color: #151922;
+    font-size: 17px;
+    font-weight: 900;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .xruns-daily-share-card .xruns-share-sub {
+    font-size: 13px;
+    line-height: 1.22;
+    margin-top: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .xruns-daily-share-value {
+    color: #1a365d;
+    font-weight: 900;
+    font-size: 18px;
+    white-space: nowrap;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #e8eef7;
+    align-self: center;
+  }
+  .xruns-matchup-driver-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid #e5e8ef;
+    font-size: 0.82rem;
+  }
+  .xruns-matchup-driver-row:first-of-type {
+    border-top: 0;
+  }
+  .xruns-matchup-driver-component {
+    color: #475569;
+    font-weight: 750;
+  }
+  .xruns-matchup-driver-edge {
+    color: #151922;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  @media (max-width: 720px) {
+    .xruns-intro-compact summary {
+      grid-template-columns: 1fr;
+      gap: 8px;
+      padding: 11px 14px;
+    }
+    .xruns-intro-toggle {
+      justify-self: start;
+      padding: 5px 9px;
+      font-size: 0.7rem;
+    }
+    .xruns-intro-promise {
+      font-size: 0.88rem;
+    }
+    .xruns-intro-body {
+      grid-template-columns: 1fr;
+      padding: 10px 14px 12px;
+      font-size: 0.74rem;
+      gap: 8px;
+    }
+  }
+  @media (max-width: 980px) {
+    .xruns-player-spot-grid,
+    .xruns-driver-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 1180px) {
+    .xruns-preview-section {
+      margin-top: 12px;
+    }
+    .xruns-preview-head {
+      padding: 12px 14px 10px;
+      gap: 8px;
+    }
+    .xruns-preview-title {
+      font-size: 1rem;
+      min-width: 0;
+    }
+    .xruns-preview-sub {
+      font-size: 0.7rem;
+      line-height: 1.3;
+    }
+    .xruns-preview-head .xruns-share-inline {
+      width: 100%;
+      margin-left: 0;
+    }
+    .xruns-preview-head .xruns-share-btn {
+      min-height: 34px;
+      padding: 6px 10px !important;
+    }
+    .xruns-today-grid {
+      display: flex;
+      overflow-x: auto;
+      gap: 8px;
+      padding: 10px 14px 12px;
+      scroll-snap-type: x proximity;
+      -webkit-overflow-scrolling: touch;
+    }
+    .xruns-today-card {
+      flex: 0 0 clamp(300px, 42vw, 420px);
+      padding: 10px;
+      scroll-snap-align: start;
+    }
+    .xruns-today-card-label {
+      margin-bottom: 6px;
+      font-size: 0.58rem;
+    }
+    .xruns-today-card > div:nth-child(2) {
+      font-size: 0.84rem !important;
+    }
+    .xruns-today-row {
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      padding: 6px 0;
+      gap: 7px;
+    }
+    .xruns-today-row:nth-of-type(n+4) {
+      display: none;
+    }
+    .xruns-today-logo {
+      width: 24px;
+      height: 24px;
+    }
+    .xruns-today-team {
+      font-size: 0.75rem;
+    }
+    .xruns-today-body {
+      display: none;
+    }
+    .xruns-today-value {
+      font-size: 0.7rem;
+    }
+  }
+  @media (max-width: 620px) {
+    .xruns-player-spot-grid,
+    .xruns-driver-grid,
+    .xruns-daily-share-body {
+      grid-template-columns: 1fr;
+    }
+    .xruns-preview-head .xruns-share-inline {
+      width: 100%;
+      margin-left: 0;
+    }
+    .xruns-preview-head .xruns-share-btn {
+      width: 100%;
+    }
+    .xruns-today-card {
+      flex-basis: 78%;
+    }
+  }
+")
 
 xruns_apply_rounded_png_mask <- function(file, radius_px = NULL) {
   if (!requireNamespace("magick", quietly = TRUE)) {
@@ -5184,6 +5855,7 @@ ui <- page_navbar(
       tags$style(custom_css),
       tags$style(product_css),
       tags$style(HTML(xruns_share_card_css())),
+      tags$style(preview_css),
       tags$style(HTML("
         #xruns-share-stage {
           position: fixed;
@@ -5277,7 +5949,7 @@ ui <- page_navbar(
           Shiny.setInputValue('time_period', 'season', {priority: 'event'});
           document.querySelectorAll('.xruns-period-chip').forEach(function(el) {
             el.classList.remove('active');
-            if (el.textContent.trim() === 'Season') el.classList.add('active');
+            if (el.textContent.trim() === 'Overall') el.classList.add('active');
           });
         });
         // Auto-collapse navbar dropdown when a nav link is clicked on mobile
@@ -5308,6 +5980,7 @@ ui <- page_navbar(
     ),
     tags$div(
       id = "xruns-share-stage",
+      uiOutput("client_daily_share_card"),
       uiOutput("client_rankings_share_card"),
       uiOutput("client_team_share_card"),
       uiOutput("client_player_share_card"),
@@ -5321,36 +5994,35 @@ ui <- page_navbar(
     tags$main(
       class = "xruns-page",
 
-      # ---- Hero / landing block ----
-      tags$div(
-        class = "xruns-hero",
-        tags$div(
-          class = "xruns-hero-main",
-          tags$div(class = "xruns-kicker", "MLB Performance Ratings"),
-          tags$p(
-            class = "xruns-hero-copy",
-            "xRuns rates every MLB team and player using expected performance stats — ",
-            "what they should have scored, not just what they did. ",
-            "No luck. No noise. Just signal."
-          )
+      # ---- Compact intro / collapsible explainer ----
+      tags$details(
+        class = "xruns-intro-compact",
+        tags$summary(
+          tags$div(
+            tags$div(class = "xruns-intro-kicker", "MLB Performance Ratings"),
+            tags$div(
+              class = "xruns-intro-promise",
+              "The standings show what happened. xRuns shows what should be happening."
+            )
+          ),
+          tags$span(class = "xruns-intro-toggle", "How ratings work")
         ),
         tags$div(
-          class = "xruns-hero-panel",
-          tags$div(class = "xruns-panel-label", "How ratings work"),
+          class = "xruns-intro-body",
           tags$p(
-            style = "font-size:12.5px; line-height:1.6; color:#485264; margin:0;",
             tags$b("Overall"), " = runs/game above a league-average team. ",
             tags$b("Positive is good"), "; 0 = exactly average. ",
             tags$b("Offense"), " = hitting + baserunning. ",
             tags$b("Defense"), " = pitching + fielding."
           ),
           tags$p(
-            style = "font-size:12px; line-height:1.55; color:#64748b; margin:4px 0 0;",
             "Built from Statcast expected stats (xwOBA, xERA) — ",
-            "a hot streak or lucky week won't inflate a rating."
+            "best read as expected-performance signal, not a guarantee of future wins."
           )
         )
       ),
+
+      uiOutput("today_board"),
       
       # Heading row with time-period filter (only shown for years with snapshot history)
       tags$div(
@@ -5563,6 +6235,11 @@ ui <- page_navbar(
         ),
         tags$div(season_picker_inline("tb")),
         tags$div(
+          style = "font-size:12px; color:#64748b; font-weight:650;",
+          tags$i(class = "fa-solid fa-circle-info me-1"),
+          "Team profiles always use Overall ratings."
+        ),
+        tags$div(
           class = "xruns-share-inline",
           style = "margin-left:auto;",
           actionButton(
@@ -5681,6 +6358,7 @@ ui <- page_navbar(
         )
       ),
       heading_with_filter_picker("players", "players_heading"),
+      uiOutput("player_spotlight_cards"),
       tags$div(class = "tab-body", DTOutput("players_table"))
     )
   ),
@@ -5785,6 +6463,17 @@ ui <- page_navbar(
                  card_header("Model fit vs. actual run differential — all historical seasons"),
                  verbatimTextOutput("model_fit_summary")
                ),
+               card(
+                 card_header("Model Record — train on prior seasons, test the next completed season"),
+                 tags$div(
+                   style = "padding: 10px 16px;",
+                   tags$p(
+                     class = "xruns-model-record-note",
+                     "This is a stricter historical check than the fit table above: each row trains the model only on seasons before the test year, then compares the test-year team ratings against that season's final run differential. It is evidence of historical signal, not a promise that any single future game or season will break the same way."
+                   ),
+                   DTOutput("model_record_table")
+                 )
+               ),
                
                # ---- Standings accuracy check (moved from its own tab) ------------------
                tags$hr(style = "margin: 24px 0; border-color: #e2e8f0;"),
@@ -5852,22 +6541,32 @@ server <- function(input, output, session) {
     snapshots <- all_snapshots_by_year[[yc]]
 
     if (is.null(snapshots) || length(snapshots) == 0) {
-      return(paste0(yc, " season data"))
+      return(paste0(yc, " overall ratings"))
     }
 
     if (identical(tp, "season")) {
       latest_d <- names(snapshots)[length(snapshots)]
-      return(paste0(yc, " season data through ", format(as.Date(latest_d), "%b %d, %Y")))
+      return(paste0(yc, " overall ratings through ", format(as.Date(latest_d), "%b %d, %Y")))
     }
 
     window_days <- switch(tp, "30d" = 30, "7d" = 7, "1d" = 1, Inf)
     wd <- compute_window_data(snapshots, window_days)
     if (is.null(wd)) {
-      return(paste0(yc, " season data"))
+      return(paste0(yc, " overall ratings"))
     }
 
     period <- switch(tp, "30d" = "Last 30 days", "7d" = "Last 7 days", "1d" = "Last day", "Selected period")
     paste0(period, " (", wd$window_label, ")")
+  })
+
+  current_overall_data_label <- reactive({
+    yc <- current_year()
+    snapshots <- all_snapshots_by_year[[yc]]
+    if (is.null(snapshots) || length(snapshots) == 0) {
+      return(paste0(yc, " overall ratings"))
+    }
+    latest_d <- names(snapshots)[length(snapshots)]
+    paste0(yc, " overall ratings through ", format(as.Date(latest_d), "%b %d, %Y"))
   })
 
   # ---- Selected player ID (reactive value, persists across renders) ----
@@ -6446,7 +7145,7 @@ server <- function(input, output, session) {
     
     tags$div(
       class = "xruns-period-group",
-      make_chip("season", "Season"),
+      make_chip("season", "Overall"),
       tags$span(class = "xruns-period-sep", "·"),
       make_chip("30d", "30d"),
       tags$span(class = "xruns-period-sep", "·"),
@@ -6510,6 +7209,87 @@ server <- function(input, output, session) {
   # ---- Team table reactive — responds to year AND time period ----------------
   current_team_tbl <- reactive({
     team_tbl_for_period(input$time_period %||% "season")
+  })
+
+  daily_board <- reactive({
+    xruns_daily_rows(current_year(), models, team_tbl_for_period("season"))
+  })
+
+  output$today_board <- renderUI({
+    rows <- daily_board()
+    if (is.null(rows) || nrow(rows) == 0) return(NULL)
+
+    grouped <- split(rows, rows$card_title)
+    cards <- lapply(names(grouped), function(title) {
+      group <- grouped[[title]]
+      item_rows <- lapply(seq_len(nrow(group)), function(i) {
+        row <- group[i, ]
+        tags$a(
+          href = row$route,
+          class = "xruns-today-row",
+          style = "text-decoration:none;",
+          if (!is.na(row$team_logo_espn) && nzchar(row$team_logo_espn)) {
+            tags$img(class = "xruns-today-logo", src = row$team_logo_espn, alt = row$abbrev)
+          } else {
+            tags$div(class = "xruns-today-logo")
+          },
+          tags$div(
+            tags$div(class = "xruns-today-team", row$team_name),
+            tags$div(class = "xruns-today-body", row$card_body)
+          ),
+          tags$div(class = "xruns-today-value", row$card_value)
+        )
+      })
+
+      tags$div(
+        class = "xruns-today-card",
+        tags$div(class = "xruns-today-card-label", group$card_kicker[1]),
+        tags$div(
+          style = "color:#151922; font-size:0.98rem; font-weight:900; margin-bottom:4px;",
+          title
+        ),
+        tagList(item_rows)
+      )
+    })
+
+    tags$section(
+      class = "xruns-preview-section",
+      tags$div(
+        class = "xruns-preview-head",
+        tags$div(
+          tags$div(class = "xruns-preview-title", "Today in xRuns"),
+          tags$div(
+            class = "xruns-preview-sub",
+            "Daily arguments from the model: movers, recent form, and record-vs-signal gaps when standings data is available."
+          )
+        ),
+        tags$div(
+          class = "xruns-share-inline",
+          actionButton(
+            "download_daily_card_client",
+            tagList(tags$i(class = "fa-solid fa-image"), "Share Today"),
+            class = "xruns-share-btn xruns-share-btn-secondary",
+            onclick = "xrunsDownloadClientShareCard('client_daily_share_card')"
+          )
+        )
+      ),
+      tags$div(class = "xruns-today-grid", tagList(cards))
+    )
+  })
+
+  output$client_daily_share_card <- renderUI({
+    rows <- daily_board()
+    if (is.null(rows) || nrow(rows) == 0) return(NULL)
+    tags$div(
+      `data-filename` = paste0("xruns-daily-", current_year(), ".png"),
+      xruns_daily_share_card(
+        daily_rows = rows,
+        season = current_year(),
+        base_url = xruns_current_base_url(session),
+        data_label = current_overall_data_label(),
+        route = xruns_route_hash("team-rankings")
+      )
+    )
   })
 
   output$client_rankings_share_card <- renderUI({
@@ -6823,6 +7603,69 @@ server <- function(input, output, session) {
       font          = list(family = "Inter")
     ) %>%
       config(displayModeBar = FALSE)
+  })
+
+  output$player_spotlight_cards <- renderUI({
+    pv <- current_players_view()
+    if (is.null(pv) || nrow(pv) == 0) return(NULL)
+
+    dual_player_ids <- pv$player_id[pv$Role == "Player"]
+    clean <- pv %>%
+      dplyr::filter(Role == "Player" | (Role %in% c("Hitter", "Pitcher") &
+                                           !(player_id %in% dual_player_ids)))
+    if (nrow(clean) == 0) return(NULL)
+
+    best_overall <- clean %>% dplyr::arrange(dplyr::desc(Overall)) %>% dplyr::slice_head(n = 1)
+    best_hitter <- clean %>% dplyr::filter(!is.na(Hitting)) %>%
+      dplyr::arrange(dplyr::desc(Hitting)) %>% dplyr::slice_head(n = 1)
+    best_pitcher <- clean %>% dplyr::filter(!is.na(Pitching)) %>%
+      dplyr::arrange(dplyr::desc(Pitching)) %>% dplyr::slice_head(n = 1)
+    secondary_pool <- clean %>%
+      dplyr::mutate(
+        secondary_value = pmax(dplyr::coalesce(Baserunning, -Inf),
+                               dplyr::coalesce(Fielding, -Inf)),
+        secondary_label = ifelse(dplyr::coalesce(Baserunning, -Inf) >= dplyr::coalesce(Fielding, -Inf),
+                                 "Baserunning", "Fielding")
+      ) %>%
+      dplyr::filter(is.finite(secondary_value)) %>%
+      dplyr::arrange(dplyr::desc(secondary_value))
+    best_secondary <- secondary_pool %>% dplyr::slice_head(n = 1)
+
+    card_for <- function(label, row, metric, metric_label = metric) {
+      if (is.null(row) || nrow(row) == 0) return(NULL)
+      team_meta <- TEAM_META[match(row$Team[1], TEAM_META$abbrev), ]
+      logo <- if (nrow(team_meta) > 0 && !is.na(team_meta$team_logo_espn[1])) {
+        tags$img(class = "xruns-player-spot-logo", src = team_meta$team_logo_espn[1], alt = row$Team[1])
+      } else {
+        tags$div(class = "xruns-player-spot-logo")
+      }
+      value <- if (metric %in% names(row)) row[[metric]][1] else NA_real_
+      tags$a(
+        href = xruns_player_profile_route(row),
+        class = "xruns-player-spot-card",
+        style = "text-decoration:none;",
+        tags$div(class = "xruns-player-spot-label", label),
+        tags$div(
+          class = "xruns-player-spot-main",
+          logo,
+          tags$div(
+            tags$div(class = "xruns-player-spot-name", row$Player[1]),
+            tags$div(class = "xruns-player-spot-sub", paste(row$Team[1], "·", metric_label))
+          ),
+          tags$div(class = "xruns-player-spot-value", sprintf("%+.2f", value))
+        )
+      )
+    }
+
+    secondary_label <- if (nrow(best_secondary) > 0) best_secondary$secondary_label[1] else "Secondary Skill"
+
+    tags$div(
+      class = "xruns-player-spot-grid",
+      card_for("Best Overall", best_overall, "Overall"),
+      card_for("Best Hitter", best_hitter, "Hitting"),
+      card_for("Best Pitcher", best_pitcher, "Pitching"),
+      card_for(paste("Best", secondary_label), best_secondary, "secondary_value", secondary_label)
+    )
   })
   
   # ---- Player table (unified batters + pitchers) ----
@@ -7174,6 +8017,23 @@ server <- function(input, output, session) {
     ))
     cat("NOTE: the model is trained on player-level runs/PA only. Team records were never used as training data.\n")
   })
+
+  output$model_record_table <- renderDT({
+    record <- xruns_holdout_model_record()
+    if (is.null(record) || nrow(record) == 0) {
+      return(datatable(
+        data.frame(Message = "Not enough completed prior seasons are available for a holdout model record yet."),
+        rownames = FALSE,
+        options = list(dom = "t", pageLength = 1)
+      ))
+    }
+    datatable(
+      record,
+      rownames = FALSE,
+      class = "compact stripe hover",
+      options = list(dom = "t", pageLength = nrow(record), ordering = FALSE)
+    )
+  })
   
   # ============================================================================
   # Matchup Simulator — server
@@ -7344,7 +8204,7 @@ server <- function(input, output, session) {
       dplyr::arrange(dplyr::desc(prob)) %>%
       head(5)
     
-    list(
+    result <- list(
       ta = ta, tb = tb, sa = sa, sb = sb,
       exp_a = exp_a, exp_b = exp_b,
       p_a_wins = p_a_wins, p_b_wins = p_b_wins, p_tie = p_tie,
@@ -7355,6 +8215,8 @@ server <- function(input, output, session) {
       tb_pitch_vs_a = tb_pitch_vs_a, ta_pitch_vs_b = ta_pitch_vs_b,
       tb_def_vs_a   = tb_def_vs_a,   ta_def_vs_b   = ta_def_vs_b
     )
+    result$matchup_drivers <- xruns_matchup_drivers(result)
+    result
   }, ignoreNULL = TRUE)
 
   output$mp_share_button <- renderUI({
@@ -7422,6 +8284,22 @@ server <- function(input, output, session) {
     txt_b <- contrast_text(col_b)
     pct_a <- round(res$p_a_wins * 100, 1)
     pct_b <- 100 - pct_a   # derived so the two always sum exactly to 100
+    fav <- if (pct_a >= pct_b) ta$team_name else tb$team_name
+    driver_tbl <- res$matchup_drivers %||% tibble::tibble()
+    driver_cards <- if (nrow(driver_tbl) > 0) {
+      lapply(seq_len(min(4, nrow(driver_tbl))), function(i) {
+        d <- driver_tbl[i, ]
+        tags$div(
+          class = "xruns-driver-card",
+          tags$div(class = "xruns-driver-label", d$Component),
+          tags$div(class = "xruns-driver-value", d$Summary),
+          tags$div(class = "xruns-driver-note",
+                   "Positive edge is assigned to the team with the stronger component.")
+        )
+      })
+    } else {
+      list()
+    }
     
     # Most likely scores rows.
     score_rows <- lapply(seq_len(nrow(res$top_scores)), function(i) {
@@ -7512,6 +8390,14 @@ server <- function(input, output, session) {
                    sprintf("%s: %.1f%%   |   %s: %.1f%%", ta$abbrev, pct_a, tb$abbrev, pct_b))
         )
       ),
+
+      if (length(driver_cards) > 0) {
+        card(
+          style = "margin-bottom:14px;",
+          card_header(paste("Why xRuns favors", fav)),
+          card_body(tags$div(class = "xruns-driver-grid", tagList(driver_cards)))
+        )
+      },
       
       # Starting pitcher cards.
       card(
@@ -7757,9 +8643,13 @@ server <- function(input, output, session) {
   # Team Profile tab
   # ==========================================================================
 
+  team_profile_tbl <- reactive({
+    team_tbl_for_period("season")
+  })
+
   # Reactive: one-row slice of the current team table for the selected team
   selected_team_row <- reactive({
-    tt  <- current_team_tbl()
+    tt  <- team_profile_tbl()
     sel <- input$tb_team %||% "LAD"
     row <- tt %>% dplyr::filter(abbrev == sel)
     if (nrow(row) == 0) return(NULL)
@@ -7813,7 +8703,7 @@ server <- function(input, output, session) {
         ranks = ranks,
         season = current_year(),
         base_url = xruns_current_base_url(session),
-        data_label = current_share_data_label(),
+        data_label = current_overall_data_label(),
         team_pool = tt,
         recent_ranks = recent_ranks,
         featured_players = list(hitter = best_hitter, pitcher = best_pitcher),
@@ -7833,7 +8723,7 @@ server <- function(input, output, session) {
   # ---- Section 1: Team Header ----
   output$tb_header <- renderUI({
     row <- selected_team_row()
-    tt  <- current_team_tbl()
+    tt  <- team_profile_tbl()
     if (is.null(row)) return(NULL)
 
     rank_overall <- which(dplyr::arrange(tt, dplyr::desc(overall))$abbrev  == row$abbrev[1])
@@ -7879,7 +8769,8 @@ server <- function(input, output, session) {
         class = "tb-header-title",
         style = "flex:1;",
         tags$div(style = "font-size:1.4rem; font-weight:800; color:#1e293b; line-height:1.2;", row$team_name),
-        tags$div(style = "font-size:12px; color:#94a3b8; margin-top:3px;", current_year())
+        tags$div(style = "font-size:12px; color:#94a3b8; margin-top:3px;",
+                 paste(current_year(), "overall ratings"))
       ),
       tags$div(
         class = "tb-rating-pills",
@@ -7954,7 +8845,7 @@ server <- function(input, output, session) {
   # One chart with three traces (Overall, Offense, Defense). Each team is a
   # row on the y-axis, sorted by Overall. The selected team row is highlighted.
   output$tb_league_context <- renderPlotly({
-    tt  <- current_team_tbl()
+    tt  <- team_profile_tbl()
     sel <- input$tb_team %||% "LAD"
 
     is_sel    <- tt$abbrev == sel
