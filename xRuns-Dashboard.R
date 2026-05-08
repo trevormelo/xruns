@@ -58,6 +58,9 @@ PA_PER_GAME     <- 38       # team PAs per 9-inning game
 OUTS_PER_GAME   <- 27       # defensive outs per game at one fielding position
 FIELDER_OUTS_PER_GAME <- 9 * OUTS_PER_GAME  # 243 fielder-outs per team-game (9 positions)
 SUPPORTED_YEARS <- 2022:2026
+MLB_AVG_RUNS_PER_GAME <- 4.5
+DISP_SIZE <- 8
+WIN_PROB_RUN_MAX <- 30
 
 # ---- reliability scalars for raw Statcast run values -------------------------
 # Hitting and pitching run values are produced via a regression model that
@@ -738,6 +741,8 @@ compute_window_data <- function(snapshots, window_days) {
     out$window_label    <- format(as.Date(latest_d), "%b %d, %Y")
     out$window_fallback <- FALSE
     out$fallback_msg    <- NULL
+    out$latest_date     <- latest_d
+    out$older_date      <- NULL
     return(out)
   }
   
@@ -797,12 +802,173 @@ compute_window_data <- function(snapshots, window_days) {
     team_fld       = fld_d,
     standings      = NULL,
     date           = latest$date,
+    latest_date    = latest_d,
+    older_date     = older_d,
     window_label   = sprintf("%s – %s",
                              format(as.Date(older_d),  "%b %d"),
                              format(latest_date,        "%b %d, %Y")),
     window_fallback = !is.null(fallback_msg),
     fallback_msg   = fallback_msg
   )
+}
+
+# ---- Current-season standings cache -----------------------------------------
+load_standings_daily_cache <- function(base, y) {
+  cache <- read_github_csv(
+    github_raw_url(paste0(y, " Data"), sprintf("standings_daily_%d.csv", y))
+  )
+  if (is.null(cache)) {
+    return(tibble::tibble(
+      snapshot_date = as.Date(character()),
+      season = integer(),
+      team_id = integer(),
+      abbrev = character(),
+      team_name = character(),
+      W = numeric(),
+      L = numeric(),
+      `W-L%` = numeric()
+    ))
+  }
+  
+  cache %>%
+    dplyr::transmute(
+      snapshot_date = as.Date(snapshot_date),
+      season        = as.integer(season),
+      team_id       = as.integer(team_id),
+      abbrev        = canonicalize_abbrev(as.character(abbrev)),
+      team_name     = as.character(team_name),
+      W             = safe_numeric(W),
+      L             = safe_numeric(L),
+      `W-L%`        = safe_numeric(`W-L%`)
+    ) %>%
+    dplyr::filter(!is.na(snapshot_date), !is.na(team_id)) %>%
+    dplyr::arrange(snapshot_date, team_id) %>%
+    dplyr::distinct(snapshot_date, team_id, .keep_all = TRUE)
+}
+
+window_dates_for_period <- function(snapshots, window_days) {
+  if (length(snapshots) == 0) return(NULL)
+  d_strs <- names(snapshots)
+  latest_d <- d_strs[length(d_strs)]
+  
+  if (is.infinite(window_days) || length(d_strs) == 1) {
+    return(list(latest_date = as.Date(latest_d), older_date = NULL))
+  }
+  
+  latest_date <- as.Date(latest_d)
+  cutoff_date <- latest_date - window_days
+  older_d_strs <- d_strs[as.Date(d_strs) <= cutoff_date]
+  older_d <- if (length(older_d_strs) == 0) d_strs[1] else older_d_strs[length(older_d_strs)]
+  
+  list(latest_date = as.Date(latest_d), older_date = as.Date(older_d))
+}
+
+standings_for_period <- function(cache, snapshots, window_days) {
+  if (is.null(cache) || nrow(cache) == 0 || length(snapshots) == 0) return(NULL)
+  dates <- window_dates_for_period(snapshots, window_days)
+  if (is.null(dates)) return(NULL)
+  
+  latest <- cache %>%
+    dplyr::filter(snapshot_date <= dates$latest_date) %>%
+    dplyr::group_by(team_id) %>%
+    dplyr::slice_max(snapshot_date, n = 1, with_ties = FALSE) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(team_id, W_latest = W, L_latest = L)
+  
+  if (nrow(latest) == 0) return(NULL)
+  
+  if (is.null(dates$older_date)) {
+    latest %>%
+      dplyr::transmute(
+        team_id,
+        W = W_latest,
+        L = L_latest,
+        `W-L%` = ifelse((W + L) > 0, W / (W + L), NA_real_)
+      )
+  } else {
+    older <- cache %>%
+      dplyr::filter(snapshot_date <= dates$older_date) %>%
+      dplyr::group_by(team_id) %>%
+      dplyr::slice_max(snapshot_date, n = 1, with_ties = FALSE) %>%
+      dplyr::ungroup() %>%
+      dplyr::select(team_id, W_older = W, L_older = L)
+    
+    latest %>%
+      dplyr::left_join(older, by = "team_id") %>%
+      dplyr::mutate(
+        W_older = dplyr::coalesce(W_older, 0),
+        L_older = dplyr::coalesce(L_older, 0),
+        W = pmax(0, W_latest - W_older),
+        L = pmax(0, L_latest - L_older),
+        `W-L%` = ifelse((W + L) > 0, W / (W + L), NA_real_)
+      ) %>%
+      dplyr::select(team_id, W, L, `W-L%`)
+  }
+}
+
+xruns_win_prob_one <- function(rs, ra) {
+  if (!is.finite(rs) || !is.finite(ra)) return(NA_real_)
+  rs <- max(0.5, min(20, rs))
+  ra <- max(0.5, min(20, ra))
+  
+  runs_seq <- 0:WIN_PROB_RUN_MAX
+  prob_for <- stats::dnbinom(runs_seq, mu = rs, size = DISP_SIZE)
+  prob_against <- stats::dnbinom(runs_seq, mu = ra, size = DISP_SIZE)
+  score_mat <- outer(prob_for, prob_against)
+  
+  p_win_9 <- sum(score_mat[outer(runs_seq, runs_seq, ">")])
+  p_tied_9 <- sum(diag(score_mat))
+  extras_win <- rs / (rs + ra)
+  
+  p_win_9 + p_tied_9 * extras_win
+}
+
+xruns_win_prob <- Vectorize(xruns_win_prob_one, vectorize.args = c("rs", "ra"))
+
+xruns_avg_win_prob <- xruns_win_prob_one(
+  MLB_AVG_RUNS_PER_GAME,
+  MLB_AVG_RUNS_PER_GAME
+)
+
+xruns_component_waa <- function(rpg_value, games, side = c("offense", "defense")) {
+  side <- match.arg(side)
+  games <- dplyr::coalesce(games, 0)
+  rpg_value <- dplyr::coalesce(rpg_value, 0)
+  
+  wp <- if (side == "offense") {
+    xruns_win_prob(MLB_AVG_RUNS_PER_GAME + rpg_value, MLB_AVG_RUNS_PER_GAME)
+  } else {
+    xruns_win_prob(MLB_AVG_RUNS_PER_GAME, MLB_AVG_RUNS_PER_GAME - rpg_value)
+  }
+  
+  games * (wp - xruns_avg_win_prob)
+}
+
+attach_period_records <- function(tt, cache, snapshots, window_days) {
+  st <- standings_for_period(cache, snapshots, window_days)
+  if (!is.null(st)) {
+    tt <- tt %>%
+      dplyr::select(-dplyr::any_of(c("W", "L", "W-L%", "R", "RA", "Rdiff", "rdiff_per_game"))) %>%
+      dplyr::left_join(st, by = "team_id")
+  }
+  if (!"W" %in% names(tt)) tt$W <- NA_real_
+  if (!"L" %in% names(tt)) tt$L <- NA_real_
+  if (!"W-L%" %in% names(tt)) tt$`W-L%` <- NA_real_
+  
+  tt %>%
+    dplyr::mutate(
+      games_played = dplyr::coalesce(W, 0) + dplyr::coalesce(L, 0),
+      x_runs_for   = pmax(0.5, MLB_AVG_RUNS_PER_GAME + off_rating),
+      x_runs_against = pmax(0.5, MLB_AVG_RUNS_PER_GAME - def_rating),
+      x_win_pct = ifelse(
+        is.finite(x_runs_for) & is.finite(x_runs_against),
+        xruns_win_prob(x_runs_for, x_runs_against),
+        NA_real_
+      ),
+      xW = ifelse(games_played > 0, x_win_pct * games_played, NA_real_),
+      xL = ifelse(games_played > 0, games_played - xW, NA_real_),
+      xW_diff = ifelse(games_played > 0, xW - W, NA_real_)
+    )
 }
 
 # ---- modelling ---------------------------------------------------------------
@@ -838,13 +1004,12 @@ RECENCY_DECAY <- 0.5
 RECENCY_BLEND_ALPHA_MAX <- 0.40
 RECENCY_BLEND_K         <- 600   # PAs for half-max alpha
 
-# Negative Binomial dispersion parameter for the matchup simulator.
+# Negative Binomial dispersion parameter for the matchup simulator and WAA.
 # Replaces the Poisson (which forces variance = mean) with a distribution that
 # allows variance = mu + mu^2/DISP_SIZE, producing heavier tails consistent
 # with real MLB run distributions. Calibrated to historical game logs; r ~ 8
 # fits observed shutout/blowout frequencies well. As DISP_SIZE -> Inf the NB
 # collapses back to Poisson.
-DISP_SIZE <- 8
 
 fit_pooled_models <- function(years_list) {
   bat_pool <- bind_rows(lapply(years_list, `[[`, "batters"))
@@ -1295,7 +1460,18 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Hitting     = adj_pred_runs_per_pa * PA_PER_GAME,
       Baserunning = br_per_pa * PA_PER_GAME * BASERUNNING_RELIABILITY,
       Pitching    = NA_real_,
-      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY
+      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY,
+      hit_pa      = pa,
+      pit_pa      = NA_real_,
+      fld_outs    = fld_outs,
+      xRuns_Hitting     = adj_pred_runs_per_pa * pa,
+      xRuns_Baserunning = br_per_pa * pa * BASERUNNING_RELIABILITY,
+      xRuns_Pitching    = NA_real_,
+      xRuns_Fielding    = fld_per_out * fld_outs * FIELDING_RELIABILITY,
+      WAA_Hitting       = xruns_component_waa(adj_pred_runs_per_pa * PA_PER_GAME, pa / PA_PER_GAME, "offense"),
+      WAA_Baserunning   = xruns_component_waa(br_per_pa * PA_PER_GAME * BASERUNNING_RELIABILITY, pa / PA_PER_GAME, "offense"),
+      WAA_Pitching      = NA_real_,
+      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense")
     )
 
   pit_rows <- pitchers %>%
@@ -1309,7 +1485,18 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       Hitting     = NA_real_,
       Baserunning = NA_real_,
       Pitching    = adj_pred_runs_per_pa * PA_PER_GAME,
-      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY
+      Fielding    = fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY,
+      hit_pa      = NA_real_,
+      pit_pa      = pa,
+      fld_outs    = fld_outs,
+      xRuns_Hitting     = NA_real_,
+      xRuns_Baserunning = NA_real_,
+      xRuns_Pitching    = adj_pred_runs_per_pa * pa,
+      xRuns_Fielding    = fld_per_out * fld_outs * FIELDING_RELIABILITY,
+      WAA_Hitting       = NA_real_,
+      WAA_Baserunning   = NA_real_,
+      WAA_Pitching      = xruns_component_waa(adj_pred_runs_per_pa * PA_PER_GAME, pa / PA_PER_GAME, "defense"),
+      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense")
     )
   
   all_rows <- dplyr::bind_rows(bat_rows, pit_rows)
@@ -1328,11 +1515,31 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       dual_bat %>% dplyr::select(player_id, Player, Team,
                                   PA_hit = PA, xwOBA_hit = xwOBA,
                                   Hitting, Baserunning,
-                                  Fielding_hit = Fielding),
+                                  Fielding_hit = Fielding,
+                                  hit_pa_hit = hit_pa,
+                                  pit_pa_hit = pit_pa,
+                                  fld_outs_hit = fld_outs,
+                                  xRuns_Hitting, xRuns_Baserunning,
+                                  xRuns_Pitching_hit = xRuns_Pitching,
+                                  xRuns_Fielding_hit = xRuns_Fielding,
+                                  WAA_Hitting, WAA_Baserunning,
+                                  WAA_Pitching_hit = WAA_Pitching,
+                                  WAA_Fielding_hit = WAA_Fielding),
       dual_pit %>% dplyr::select(player_id,
                                   PA_pit = PA, xwOBA_pit = xwOBA,
                                   Pitching,
-                                  Fielding_pit = Fielding),
+                                  Fielding_pit = Fielding,
+                                  hit_pa_pit = hit_pa,
+                                  pit_pa_pit = pit_pa,
+                                  fld_outs_pit = fld_outs,
+                                  xRuns_Hitting_pit = xRuns_Hitting,
+                                  xRuns_Baserunning_pit = xRuns_Baserunning,
+                                  xRuns_Pitching,
+                                  xRuns_Fielding_pit = xRuns_Fielding,
+                                  WAA_Hitting_pit = WAA_Hitting,
+                                  WAA_Baserunning_pit = WAA_Baserunning,
+                                  WAA_Pitching,
+                                  WAA_Fielding_pit = WAA_Fielding),
       by = "player_id"
     ) %>%
       dplyr::mutate(
@@ -1345,10 +1552,24 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
           is.na(Fielding_hit) & is.na(Fielding_pit),
           NA_real_,
           dplyr::coalesce(Fielding_hit, 0) + dplyr::coalesce(Fielding_pit, 0)
-        )
+        ),
+        hit_pa   = dplyr::coalesce(hit_pa_hit, 0) + dplyr::coalesce(hit_pa_pit, 0),
+        pit_pa   = dplyr::coalesce(pit_pa_hit, 0) + dplyr::coalesce(pit_pa_pit, 0),
+        fld_outs = dplyr::coalesce(fld_outs_hit, 0) + dplyr::coalesce(fld_outs_pit, 0),
+        xRuns_Hitting = dplyr::coalesce(xRuns_Hitting, 0) + dplyr::coalesce(xRuns_Hitting_pit, 0),
+        xRuns_Baserunning = dplyr::coalesce(xRuns_Baserunning, 0) + dplyr::coalesce(xRuns_Baserunning_pit, 0),
+        xRuns_Pitching = dplyr::coalesce(xRuns_Pitching_hit, 0) + dplyr::coalesce(xRuns_Pitching, 0),
+        xRuns_Fielding = dplyr::coalesce(xRuns_Fielding_hit, 0) + dplyr::coalesce(xRuns_Fielding_pit, 0),
+        WAA_Hitting = dplyr::coalesce(WAA_Hitting, 0) + dplyr::coalesce(WAA_Hitting_pit, 0),
+        WAA_Baserunning = dplyr::coalesce(WAA_Baserunning, 0) + dplyr::coalesce(WAA_Baserunning_pit, 0),
+        WAA_Pitching = dplyr::coalesce(WAA_Pitching_hit, 0) + dplyr::coalesce(WAA_Pitching, 0),
+        WAA_Fielding = dplyr::coalesce(WAA_Fielding_hit, 0) + dplyr::coalesce(WAA_Fielding_pit, 0)
       ) %>%
       dplyr::select(player_id, Player, Team, Role, PA, xwOBA,
-                    Hitting, Baserunning, Pitching, Fielding)
+                    Hitting, Baserunning, Pitching, Fielding,
+                    hit_pa, pit_pa, fld_outs,
+                    xRuns_Hitting, xRuns_Baserunning, xRuns_Pitching, xRuns_Fielding,
+                    WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding)
 
     # Bind: single-role rows stay intact; combined row is appended
     all_rows <- dplyr::bind_rows(all_rows, combined)
@@ -1360,16 +1581,34 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
         cbind(Hitting, Baserunning, Pitching, Fielding),
         na.rm = TRUE
       ),
+      xRuns = rowSums(
+        cbind(xRuns_Hitting, xRuns_Baserunning, xRuns_Pitching, xRuns_Fielding),
+        na.rm = TRUE
+      ),
+      WAA = rowSums(
+        cbind(WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding),
+        na.rm = TRUE
+      ),
       Hitting     = round(Hitting, 2),
       Baserunning = round(Baserunning, 2),
       Pitching    = round(Pitching, 2),
       Fielding    = round(Fielding, 2),
-      Overall     = round(Overall, 2)
+      Overall     = round(Overall, 2),
+      xRuns       = round(xRuns, 1),
+      WAA         = round(WAA, 1),
+      xRuns_Hitting     = round(xRuns_Hitting, 1),
+      xRuns_Baserunning = round(xRuns_Baserunning, 1),
+      xRuns_Pitching    = round(xRuns_Pitching, 1),
+      xRuns_Fielding    = round(xRuns_Fielding, 1)
     ) %>%
     dplyr::arrange(dplyr::desc(Overall)) %>%
     dplyr::mutate(Rank = dplyr::row_number()) %>%
     dplyr::select(Rank, player_id, Player, Team, Role, PA, xwOBA,
-                  Hitting, Baserunning, Pitching, Fielding, Overall)
+                  Hitting, Baserunning, Pitching, Fielding, Overall,
+                  xRuns, WAA,
+                  xRuns_Hitting, xRuns_Baserunning, xRuns_Pitching, xRuns_Fielding,
+                  WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding,
+                  hit_pa, pit_pa, fld_outs)
 }
 
 # ---- load and build all years -----------------------------------------------
@@ -1395,6 +1634,13 @@ all_snapshots_by_year <- setNames(
   as.character(SUPPORTED_YEARS)
 )
 all_snapshots_by_year <- Filter(function(x) length(x) > 0, all_snapshots_by_year)
+
+standings_cache_by_year <- setNames(
+  lapply(as.integer(names(all_snapshots_by_year)), function(y) {
+    load_standings_daily_cache(GITHUB_RAW_BASE, y)
+  }),
+  names(all_snapshots_by_year)
+)
 
 # team_raw_years = latest snapshot per year (used as the "Season" baseline
 # throughout the pre-computation below — same interface as before).
@@ -1653,7 +1899,8 @@ for (yc in names(team_tbl_by_year)) {
     if (is.null(pv)) return(NULL)
     pv %>%
       dplyr::select(player_id, Player, Team, Role, PA, Overall,
-                    Hitting, Baserunning, Pitching, Fielding) %>%
+                    Hitting, Baserunning, Pitching, Fielding,
+                    xRuns, WAA) %>%
       dplyr::mutate(year = as.integer(yc))
   }))
 
@@ -6352,6 +6599,9 @@ ui <- page_navbar(
             "most qualified players fall between -1.0 and +1.0. ",
             tags$b("Overall"), " = Hitting + Baserunning + Pitching + Fielding, the total ",
             "runs per 9 innings that player adds above an average player across all facets of the game. ",
+            tags$b("WAA"), " is Wins Above Average from the xRuns model, estimated by converting accumulated ",
+            "run value through the dashboard's run-probability matrix. ",
+            tags$b("xRuns"), " is the accumulated run value behind that WAA estimate. ",
             "Dashes (—) appear where a stat is not applicable — hitters have no Pitching rating; ",
             "pitchers have no Hitting or Baserunning rating."
           )
@@ -6455,6 +6705,28 @@ ui <- page_navbar(
                               "."
                             )
                           ),
+                          tags$p(tags$b("Accumulated xRuns and WAA:"),
+                                 " player ratings remain rate stats, but the player tables also show accumulated",
+                                 " value. xRuns converts each component back to total runs above average using",
+                                 " the player's opportunities: hitter and pitcher components use PA, baserunning",
+                                 " uses PA with the baserunning reliability scalar, and fielding uses defensive",
+                                 " outs with the fielding reliability scalar."),
+                          tags$p(tags$b("WAA"),
+                                 " means Wins Above Average, not wins above replacement. It is estimated by",
+                                 " converting each player's component run rate into win probability through the",
+                                 " same Negative Binomial run-scoring model used by the matchup simulator.",
+                                 " Offensive components compare win probability at league-average runs allowed",
+                                 " with and without the player's run creation. Defensive components compare win",
+                                 " probability at league-average runs scored with and without the player's run",
+                                 " prevention. Component WAA values are then summed."),
+                          tags$p("The win-probability matrix evaluates scores from 0 through ",
+                                 WIN_PROB_RUN_MAX,
+                                 " runs with dispersion r = ", DISP_SIZE,
+                                 ". The baseline is the matrix's own average-vs-average win probability at ",
+                                 MLB_AVG_RUNS_PER_GAME,
+                                 " runs per team, rather than a fixed .500 or a fixed runs-per-win shortcut.",
+                                 " This keeps WAA tied to the run environment and avoids truncating high-scoring",
+                                 " offensive outcomes."),
                           tags$p(tags$b("Important:"), " the model is NOT trained on W-L records or team run totals. ",
                                  "The accuracy check below validates it against actual run differential per game.")
                  )
@@ -6811,6 +7083,8 @@ server <- function(input, output, session) {
     role        <- row$Role
     pa          <- row$PA
     overall     <- row$Overall
+    waa         <- row$WAA
+    xruns       <- row$xRuns
     xwoba       <- row$xwOBA
 
     role_display <- switch(role,
@@ -6822,6 +7096,7 @@ server <- function(input, output, session) {
 
     overall_cls  <- if (overall > 0.01) "pos" else if (overall < -0.01) "neg" else "neu"
     overall_sign <- signed_str(overall)
+    waa_cls      <- if (waa > 0.01) "pos" else if (waa < -0.01) "neg" else "neu"
 
     # Overall percentile pill text (role-appropriate)
     pct_text <- if (role %in% c("Hitter", "Player") && length(pp_hitter_overalls) > 0) {
@@ -6883,6 +7158,11 @@ server <- function(input, output, session) {
         class = "xruns-pp-overall",
         tags$div(class = paste("xruns-pp-overall-val", overall_cls), overall_sign),
         tags$div(class = "xruns-pp-overall-label", "Overall - runs/9 vs avg"),
+        tags$div(
+          style = "display:flex; gap:14px; justify-content:center; margin:8px 0 10px; color:#475569; font-size:12px; font-weight:800;",
+          tags$span(class = waa_cls, sprintf("WAA %+.1f", waa)),
+          tags$span(sprintf("xRuns %+.1f", xruns))
+        ),
         actionButton(
           "download_player_card_client",
           tagList(tags$i(class = "fa-solid fa-image"), "Share Player Card"),
@@ -7024,14 +7304,39 @@ server <- function(input, output, session) {
         tags$span(class = paste("xruns-pp-comp-val", val_cls_str), sign_s)
       )
     })
+    
+    accum_components <- list(
+      list(label = "Hitting",     val = row$xRuns_Hitting),
+      list(label = "Baserunning", val = row$xRuns_Baserunning),
+      list(label = "Pitching",    val = row$xRuns_Pitching),
+      list(label = "Fielding",    val = row$xRuns_Fielding)
+    )
+    accum_components <- Filter(function(x) !is.na(x$val), accum_components)
+    accum_rows <- lapply(accum_components, function(x) {
+      val_cls <- if (x$val > 0.01) "pos" else if (x$val < -0.01) "neg" else "neu"
+      tags$div(
+        style = "display:flex; justify-content:space-between; gap:12px; font-size:12px; color:#475569; padding:3px 0;",
+        tags$span(x$label),
+        tags$span(class = val_cls, style = "font-weight:800;", sprintf("%+.1f", x$val))
+      )
+    })
 
     tags$div(
       class = "xruns-pp-card",
       tags$div(class = "xruns-pp-card-label", "Component breakdown"),
       tagList(comp_rows),
       tags$div(
+        style = "margin-top:12px; padding-top:10px; border-top:1px solid #e2e8f0;",
+        tags$div(
+          style = "display:flex; justify-content:space-between; color:#1e293b; font-size:12px; font-weight:900; margin-bottom:4px;",
+          tags$span("Accumulated xRuns"),
+          tags$span(sprintf("WAA %+.1f", row$WAA))
+        ),
+        tagList(accum_rows)
+      ),
+      tags$div(
         style = "font-size:10.5px; color:#94a3b8; margin-top:8px;",
-        "Bars show each component's contribution relative to the largest. Runs above avg per 9 inn."
+        "Bars show rate value. Accumulated xRuns converts those ratings through player opportunities."
       )
     )
   })
@@ -7064,6 +7369,8 @@ server <- function(input, output, session) {
     hover_txt <- paste0(
       "<b>", hist$year, "</b><br>",
       "Overall: ", sprintf("%+.2f", hist$Overall), " runs/9<br>",
+      "WAA: ", sprintf("%+.1f", hist$WAA), "<br>",
+      "xRuns: ", sprintf("%+.1f", hist$xRuns), "<br>",
       hist$Team, " · ", hist$PA, " PA"
     )
 
@@ -7174,6 +7481,8 @@ server <- function(input, output, session) {
   # ---- Team table helper — supports season and rolling windows ---------------
   team_tbl_for_period <- function(tp = "season") {
     yc <- current_year()
+    snapshots <- all_snapshots_by_year[[yc]]
+    standings_cache <- standings_cache_by_year[[yc]]
     
     has_snaps <- yc %in% names(all_snapshots_by_year) &&
       length(all_snapshots_by_year[[yc]]) > 1
@@ -7184,7 +7493,9 @@ server <- function(input, output, session) {
     # RECENCY_BLEND_ALPHA_MAX and RECENCY_BLEND_K.  Falls back to the
     # pre-computed pure-season table if blending fails or no snapshots exist.
     if (tp == "season") {
-      if (!has_snaps) return(team_tbl_by_year[[yc]])
+      if (!has_snaps) {
+        return(attach_period_records(team_tbl_by_year[[yc]], standings_cache, snapshots, Inf))
+      }
       standings_df <- if (!is.null(team_raw_years[[yc]]$standings))
         team_raw_years[[yc]]$standings
       else NULL
@@ -7192,18 +7503,21 @@ server <- function(input, output, session) {
         compute_blended_season_ratings(all_snapshots_by_year[[yc]], models, standings_df),
         error = function(e) NULL
       )
-      return(blended %||% team_tbl_by_year[[yc]])
+      return(attach_period_records(blended %||% team_tbl_by_year[[yc]], standings_cache, snapshots, Inf))
     }
     
     # ---- Rolling window views (30d / 7d / 1d): raw delta, no blending --------
     window_days <- switch(tp, "30d" = 30, "7d" = 7, "1d" = 1, Inf)
-    year_data   <- compute_window_data(all_snapshots_by_year[[yc]], window_days)
-    if (is.null(year_data)) return(team_tbl_by_year[[yc]])
+    year_data   <- compute_window_data(snapshots, window_days)
+    if (is.null(year_data)) {
+      return(attach_period_records(team_tbl_by_year[[yc]], standings_cache, snapshots, window_days))
+    }
     
-    tryCatch(
+    tt <- tryCatch(
       build_team_ratings_team_mode(year_data, models),
       error = function(e) team_tbl_by_year[[yc]]
     )
+    attach_period_records(tt, standings_cache, snapshots, window_days)
   }
 
   # ---- Team table reactive — responds to year AND time period ----------------
@@ -7360,6 +7674,16 @@ server <- function(input, output, session) {
     "  return data;",
     "}"
   )
+  signed_one_render <- JS(
+    "function(data, type, row) {",
+    "  if (type === 'display' || type === 'filter') {",
+    "    if (data === null || data === undefined || data === '' || isNaN(data)) return '—';",
+    "    var n = Number(data);",
+    "    return (n > 0 ? '+' : '') + n.toFixed(1);",
+    "  }",
+    "  return data;",
+    "}"
+  )
   
   # ---- Team Rankings table ----
   output$team_table <- renderDT({
@@ -7394,38 +7718,49 @@ server <- function(input, output, session) {
         Offense      = mapply(make_ranked_cell, off_rating,   off_rank),
         Pitching     = mapply(make_ranked_cell, def_pitching, pit_rank),
         Fielding     = mapply(make_ranked_cell, def_fld,      fld_rank),
+        Record       = ifelse(is.finite(W) & is.finite(L),
+                              sprintf("%d-%d", as.integer(W), as.integer(L)),
+                              "—"),
+        xRecord      = ifelse(is.finite(xW) & is.finite(xL),
+                              sprintf("%.1f-%.1f", xW, xL),
+                              "—"),
         # Hidden numeric columns used for sorting (invisible in table)
         off_sort     = round(off_rating,   4),
         pit_sort     = round(def_pitching, 4),
-        fld_sort     = round(def_fld,      4)
+        fld_sort     = round(def_fld,      4),
+        xW_diff_sort = round(xW_diff,      4)
       ) %>%
       transmute(
         Rank     = rank,
         ` `,
         Team     = team_name,            # col 2 — hidden on mobile via CSS
         Overall  = round(overall, 4),   # col 3 — always visible
+        Record,
+        xRecord,
+        `xW Diff` = xW_diff_sort,
         Offense,
         Pitching,
         Fielding,
         off_sort,
         pit_sort,
         fld_sort,
-        # Hidden: abbrev for row-click navigation (col index 10)
+        xW_diff_sort,
+        # Hidden: abbrev for row-click navigation (col index 14)
         abbrev_  = abbrev
       )
 
     # Column indices (0-indexed for DT columnDefs):
-    #   0 Rank  1 Logo  2 Team  3 Overall  4 Offense  5 Pitching  6 Fielding
-    #   7 off_sort (hidden)  8 pit_sort (hidden)  9 fld_sort (hidden)
-    #   10 abbrev_ (hidden)
+    #   0 Rank  1 Logo  2 Team  3 Overall  4 Record  5 xRecord  6 xW Diff
+    #   7 Offense  8 Pitching  9 Fielding
+    #   10 off_sort  11 pit_sort  12 fld_sort  13 xW_diff_sort  14 abbrev_
     # Team col (2) is always in the DOM; CSS class "team-name-col" hides it on mobile.
-    centered_cols  <- c(0, 1, 3, 4, 5, 6)
+    centered_cols  <- c(0, 1, 3, 4, 5, 6, 7, 8, 9)
 
     row_click_js <- JS(
       "function(row, data, index) {",
       "  $(row).css('cursor', 'pointer');",
       "  $(row).on('click', function(e) {",
-      "    Shiny.setInputValue('team_table_row_clicked', data[10], {priority: 'event'});",
+      "    Shiny.setInputValue('team_table_row_clicked', data[14], {priority: 'event'});",
       "  });",
       "}"
     )
@@ -7445,22 +7780,28 @@ server <- function(input, output, session) {
         rowCallback = row_click_js,
         columnDefs = list(
           list(targets = 3,             render = signed_render),
+          list(targets = 6,             render = signed_one_render),
           list(className = "dt-center", targets = centered_cols),
           list(orderable = FALSE,       targets = 1),
           list(width = "44px",          targets = 1),
           # Team column: assign class so CSS can hide it on mobile
           list(targets = 2, className = "team-name-col"),
           # Run value columns: clicking sorts descending first (higher = better)
-          list(targets = c(3, 4, 5, 6), orderSequence = list("desc", "asc")),
+          list(targets = c(3, 6, 7, 8, 9), orderSequence = list("desc", "asc")),
           # Rank column: clicking sorts ascending first (lower number = better)
           list(targets = 0, orderSequence = list("asc", "desc")),
           # Point HTML display columns at their hidden numeric sort columns
-          list(targets = 4, orderData = 7),
-          list(targets = 5, orderData = 8),
-          list(targets = 6, orderData = 9),
+          list(targets = 7, orderData = 10),
+          list(targets = 8, orderData = 11),
+          list(targets = 9, orderData = 12),
+          list(targets = 6, orderData = 13),
           # Hide the sort helper and abbrev columns
-          list(targets = c(7, 8, 9, 10), visible = FALSE)
+          list(targets = c(10, 11, 12, 13, 14), visible = FALSE)
         )
+      ),
+      caption = tags$caption(
+        style = "color:#64748b; font-size:11.5px; text-align:left; padding:6px 0;",
+        "Record is actual W-L for the selected period. xRecord is the model's expected W-L over those same games."
       )
     ) %>%
       formatStyle(columns = seq_len(ncol(dt)),
@@ -7724,22 +8065,24 @@ server <- function(input, output, session) {
         # Alias player_id as player_id_ so DT doesn't drop it as a dup
         player_id_ = player_id
       ) %>%
-      dplyr::select(Rank, Logo, Player, Overall, Team, Role, PA,
+      dplyr::select(Rank, Logo, Player, Overall, WAA, xRuns, Team, Role, PA,
                     Hitting, Baserunning, Pitching, Fielding,
                     player_id_)  # hidden — used for row-click
 
-    # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Overall=3, Team=4,
-    #   Role=5, PA=6, Hitting=7, Baserunning=8, Pitching=9, Fielding=10
-    #   player_id_=11 (hidden)
-    signed_cols   <- c(3, 7, 8, 9, 10)
-    centered_cols <- c(0, 3, 4, 5, 6, 7, 8, 9, 10)
+    # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Overall=3,
+    #   WAA=4, xRuns=5, Team=6, Role=7, PA=8,
+    #   Hitting=9, Baserunning=10, Pitching=11, Fielding=12
+    #   player_id_=13 (hidden)
+    signed_cols   <- c(3, 9, 10, 11, 12)
+    signed_one_cols <- c(4, 5)
+    centered_cols <- c(0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 
     player_row_click_js <- JS(
       "function(row, data, index) {",
       "  $(row).css('cursor', 'pointer');",
       "  $(row).on('click', function(e) {",
       "    if ($(e.target).closest('td.dtr-control').length > 0) return;",
-      "    Shiny.setInputValue('player_table_row_clicked', data[11], {priority: 'event'});",
+      "    Shiny.setInputValue('player_table_row_clicked', data[13], {priority: 'event'});",
       "  });",
       "}"
     )
@@ -7762,15 +8105,20 @@ server <- function(input, output, session) {
           list(width = "36px",    targets = 1),
           list(className = "dt-center", targets = centered_cols),
           list(targets = signed_cols, render = signed_render),
+          list(targets = signed_one_cols, render = signed_one_render),
           # Run value columns sort descending first (higher = better)
-          list(targets = c(3, 7, 8, 9, 10), orderSequence = list("desc", "asc")),
+          list(targets = c(3, 4, 5, 9, 10, 11, 12), orderSequence = list("desc", "asc")),
           # Rank sorts ascending first (lower = better)
           list(targets = 0, orderSequence = list("asc", "desc")),
           # Show dash for N/A cells
-          list(targets = c(7, 8, 9, 10), defaultContent = "—"),
+          list(targets = c(9, 10, 11, 12), defaultContent = "—"),
           # Hide the player_id column
-          list(targets = 11, visible = FALSE)
+          list(targets = 13, visible = FALSE)
         )
+      ),
+      caption = tags$caption(
+        style = "color:#94a3b8; font-size:11.5px; text-align:left; padding:6px 0;",
+        "Overall is a rate metric. WAA and xRuns are accumulated value from the xRuns model."
       )
     ) %>%
       formatStyle(columns = seq_len(ncol(pv)), fontSize = "13.5px") %>%
@@ -7778,7 +8126,7 @@ server <- function(input, output, session) {
                   color      = styleInterval(c(-0.01, 0.01),
                                              c("#b91c1c", "#64748b", "#047857")),
                   fontWeight = "bold") %>%
-      formatStyle(c("Hitting", "Baserunning", "Pitching", "Fielding"),
+      formatStyle(c("WAA", "xRuns", "Hitting", "Baserunning", "Pitching", "Fielding"),
                   color = styleInterval(c(-0.01, 0.01),
                                         c("#b91c1c", "#64748b", "#047857")))
   }, server = FALSE)
@@ -8996,7 +9344,7 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::arrange(dplyr::desc(Overall)) %>%
       dplyr::mutate(Rank = dplyr::row_number()) %>%
-      dplyr::select(Rank, Player, Overall, Role,
+      dplyr::select(Rank, Player, Overall, WAA, xRuns, Role,
                     Hitting, Baserunning, Pitching, Fielding,
                     player_id)
 
@@ -9005,6 +9353,8 @@ server <- function(input, output, session) {
     pv_display <- pv_display %>%
       dplyr::mutate(
         ovr_sort = dplyr::coalesce(Overall,     -Inf),
+        waa_sort = dplyr::coalesce(WAA,         -Inf),
+        xruns_sort = dplyr::coalesce(xRuns,     -Inf),
         hit_sort = dplyr::coalesce(Hitting,     -Inf),
         br_sort  = dplyr::coalesce(Baserunning, -Inf),
         pit_sort = dplyr::coalesce(Pitching,    -Inf),
@@ -9018,10 +9368,18 @@ server <- function(input, output, session) {
                     sprintf('<span style="color:#047857">%+.2f</span>', x),
                     sprintf('<span style="color:#b91c1c">%+.2f</span>', x)))
     }
+    fmt_signed1 <- function(x) {
+      ifelse(is.na(x), "—",
+             ifelse(x >= 0,
+                    sprintf('<span style="color:#047857">%+.1f</span>', x),
+                    sprintf('<span style="color:#b91c1c">%+.1f</span>', x)))
+    }
 
     pv_display <- pv_display %>%
       dplyr::mutate(
         Overall     = fmt_signed(Overall),
+        WAA         = fmt_signed1(WAA),
+        xRuns       = fmt_signed1(xRuns),
         Hitting     = fmt_signed(Hitting),
         Baserunning = fmt_signed(Baserunning),
         Pitching    = fmt_signed(Pitching),
@@ -9030,18 +9388,19 @@ server <- function(input, output, session) {
       dplyr::select(-player_id)
 
     # Column indices (0-indexed):
-    #  0 Rank | 1 Player | 2 Overall | 3 Role |
-    #  4 Hitting | 5 Baserunning | 6 Pitching | 7 Fielding
-    #  8 ovr_sort | 9 hit_sort | 10 br_sort | 11 pit_sort | 12 fld_sort
-    #  13 player_id_ (hidden, row-click navigation)
-    centered_cols <- c(0, 2, 3, 4, 5, 6, 7)
-    run_val_cols  <- c(2, 4, 5, 6, 7)
+    #  0 Rank | 1 Player | 2 Overall | 3 WAA | 4 xRuns | 5 Role |
+    #  6 Hitting | 7 Baserunning | 8 Pitching | 9 Fielding
+    #  10 ovr_sort | 11 waa_sort | 12 xruns_sort | 13 hit_sort
+    #  14 br_sort | 15 pit_sort | 16 fld_sort
+    #  17 player_id_ (hidden, row-click navigation)
+    centered_cols <- c(0, 2, 3, 4, 5, 6, 7, 8, 9)
+    run_val_cols  <- c(2, 3, 4, 6, 7, 8, 9)
 
     roster_row_click_js <- JS(
       "function(row, data, index) {",
       "  $(row).css('cursor', 'pointer');",
       "  $(row).on('click', function(e) {",
-      "    Shiny.setInputValue('player_table_row_clicked', data[13], {priority: 'event'});",
+      "    Shiny.setInputValue('player_table_row_clicked', data[17], {priority: 'event'});",
       "  });",
       "}"
     )
@@ -9056,8 +9415,8 @@ server <- function(input, output, session) {
         pageLength = 25,
         ordering   = TRUE,
         scrollX    = TRUE,
-        # Default: sort by Overall (col 2, via hidden sort col 8) descending
-        order      = list(list(8, "desc")),
+        # Default: sort by Overall (col 2, via hidden sort col 10) descending
+        order      = list(list(10, "desc")),
         rowCallback = roster_row_click_js,
         columnDefs = list(
           list(className      = "dt-center", targets = centered_cols),
@@ -9066,18 +9425,20 @@ server <- function(input, output, session) {
           # Rank col: first click sorts ascending
           list(orderSequence = list("asc", "desc"),  targets = 0),
           # Point each HTML column to its hidden numeric sort twin
-          list(orderData = 8,  targets = 2),
-          list(orderData = 9,  targets = 4),
-          list(orderData = 10, targets = 5),
-          list(orderData = 11, targets = 6),
-          list(orderData = 12, targets = 7),
+          list(orderData = 10, targets = 2),
+          list(orderData = 11, targets = 3),
+          list(orderData = 12, targets = 4),
+          list(orderData = 13, targets = 6),
+          list(orderData = 14, targets = 7),
+          list(orderData = 15, targets = 8),
+          list(orderData = 16, targets = 9),
           # Hide the sort helper columns
-          list(visible = FALSE, targets = c(8, 9, 10, 11, 12, 13))
+          list(visible = FALSE, targets = c(10, 11, 12, 13, 14, 15, 16, 17))
         )
       ),
       caption = tags$caption(
         style = "color:#94a3b8; font-size:11.5px; text-align:left; padding:6px 0;",
-        "Only qualified players are shown (minimum PA / BIP thresholds apply)."
+        "Only qualified players are shown. Overall is rate value; WAA and xRuns are accumulated value."
       )
     ) %>%
       formatStyle(columns = seq_len(ncol(pv_display)),
