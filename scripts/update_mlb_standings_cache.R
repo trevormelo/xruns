@@ -111,7 +111,22 @@ if (nrow(fresh) == 0) {
   stop("No standings rows were fetched.")
 }
 
-out <- bind_rows(existing, fresh) %>%
+normalize_cache_rows <- function(df) {
+  if (is.null(df) || nrow(df) == 0) return(tibble())
+  df %>%
+    mutate(
+      snapshot_date = as.Date(snapshot_date),
+      season = as.integer(season),
+      team_id = as.integer(team_id),
+      abbrev = as.character(abbrev),
+      team_name = as.character(team_name),
+      W = as.numeric(W),
+      L = as.numeric(L),
+      `W-L%` = as.numeric(`W-L%`)
+    )
+}
+
+out <- bind_rows(normalize_cache_rows(existing), normalize_cache_rows(fresh)) %>%
   mutate(
     snapshot_date = as.Date(snapshot_date),
     season = as.integer(season),
@@ -121,7 +136,9 @@ out <- bind_rows(existing, fresh) %>%
     `W-L%` = as.numeric(`W-L%`)
   ) %>%
   arrange(snapshot_date, team_id) %>%
-  distinct(snapshot_date, team_id, .keep_all = TRUE)
+  group_by(snapshot_date, team_id) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
 
 readr::write_csv(out, cache_path)
 

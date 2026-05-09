@@ -863,9 +863,54 @@ window_dates_for_period <- function(snapshots, window_days) {
   list(latest_date = as.Date(latest_d), older_date = as.Date(older_d))
 }
 
+effective_standings_cache <- function(cache) {
+  if (is.null(cache) || nrow(cache) == 0) return(cache)
+
+  date_signatures <- cache %>%
+    dplyr::arrange(snapshot_date, team_id) %>%
+    dplyr::mutate(record_piece = paste(team_id, W, L, sep = ":")) %>%
+    dplyr::group_by(snapshot_date) %>%
+    dplyr::summarise(
+      record_signature = paste(record_piece, collapse = "|"),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(snapshot_date) %>%
+    dplyr::filter(dplyr::row_number() == 1L | record_signature != dplyr::lag(record_signature))
+
+  cache %>%
+    dplyr::semi_join(date_signatures, by = "snapshot_date")
+}
+
+standings_dates_for_period <- function(cache, snapshots, window_days) {
+  if (is.null(cache) || nrow(cache) == 0 || length(snapshots) == 0) return(NULL)
+  cache <- effective_standings_cache(cache)
+  if (is.null(cache) || nrow(cache) == 0) return(NULL)
+
+  snapshot_dates <- window_dates_for_period(snapshots, Inf)
+  if (is.null(snapshot_dates)) return(NULL)
+
+  cache_dates <- sort(unique(as.Date(cache$snapshot_date)))
+  cache_dates <- cache_dates[!is.na(cache_dates) & cache_dates <= snapshot_dates$latest_date]
+  if (length(cache_dates) == 0) return(NULL)
+
+  latest_date <- cache_dates[length(cache_dates)]
+  if (is.infinite(window_days)) {
+    return(list(latest_date = latest_date, older_date = NULL))
+  }
+
+  cutoff_date <- latest_date - window_days
+  older_candidates <- cache_dates[cache_dates <= cutoff_date]
+  older_date <- if (length(older_candidates) == 0) cache_dates[1] else older_candidates[length(older_candidates)]
+
+  list(latest_date = latest_date, older_date = older_date)
+}
+
 standings_for_period <- function(cache, snapshots, window_days) {
   if (is.null(cache) || nrow(cache) == 0 || length(snapshots) == 0) return(NULL)
-  dates <- window_dates_for_period(snapshots, window_days)
+  cache <- effective_standings_cache(cache)
+  if (is.null(cache) || nrow(cache) == 0) return(NULL)
+
+  dates <- standings_dates_for_period(cache, snapshots, window_days)
   if (is.null(dates)) return(NULL)
   
   latest <- cache %>%
@@ -5431,9 +5476,12 @@ xruns_standings_gap <- function(tt) {
 }
 
 xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
+  if (!identical(as.character(yc), as.character(DEFAULT_YEAR))) {
+    return(tibble::tibble())
+  }
+
   deltas_1d <- xruns_rank_deltas(yc, models, 1)
   hot_7d <- xruns_team_table_for_window(yc, 7, models)
-  gaps <- xruns_standings_gap(season_tbl)
 
   make_rows <- function(df, title, kicker, value_fn, body_fn, n = 3) {
     if (is.null(df) || nrow(df) == 0) return(tibble::tibble())
@@ -5452,7 +5500,7 @@ xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
 
   movers <- if (!is.null(deltas_1d) && nrow(deltas_1d) > 0) {
     deltas_1d %>%
-      dplyr::arrange(dplyr::desc(rank_delta), dplyr::desc(rating_delta)) %>%
+      dplyr::arrange(dplyr::desc(abs(rank_delta)), dplyr::desc(abs(rating_delta))) %>%
       make_rows(
         "Biggest Movers",
         "Since previous snapshot",
@@ -5468,10 +5516,10 @@ xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
     hot_7d %>%
       dplyr::arrange(dplyr::desc(overall)) %>%
       make_rows(
-        "Best Last 7 Days",
+        "Best Last Week",
         "Recent form",
         function(x) sprintf("%+.2f", x$overall),
-        function(x) sprintf("Run-value pace over the current 7-day window.")
+        function(x) sprintf("Run-value pace over the last week.")
       )
   } else {
     tibble::tibble()
@@ -5481,7 +5529,7 @@ xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
     hot_7d %>%
       dplyr::arrange(overall) %>%
       make_rows(
-        "Worst Last 7 Days",
+        "Worst Last Week",
         "Recent form",
         function(x) sprintf("%+.2f", x$overall),
         function(x) sprintf("A rough expected-performance week by xRuns.")
@@ -5490,21 +5538,7 @@ xruns_daily_rows <- function(yc, models, season_tbl = NULL) {
     tibble::tibble()
   }
 
-  standings <- if (!is.null(gaps) && nrow(gaps) > 0) {
-    gaps %>%
-      dplyr::arrange(dplyr::desc(standings_gap)) %>%
-      make_rows(
-        "Standings Are Lying",
-        "xRuns vs. record",
-        function(x) paste0("+", x$standings_gap, " rank gap"),
-        function(x) sprintf("xRuns #%d, standings #%d.", x$xruns_rank, x$standings_rank),
-        n = 3
-      )
-  } else {
-    tibble::tibble()
-  }
-
-  dplyr::bind_rows(movers, hot, cold, standings)
+  dplyr::bind_rows(hot, cold, movers)
 }
 
 xruns_daily_share_card <- function(daily_rows, season, base_url, data_label = NULL, route = NULL) {
@@ -5717,10 +5751,12 @@ preview_css <- HTML("
     font-weight: 600;
   }
   .xruns-today-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
+    overflow-x: auto;
     gap: 10px;
     padding: 14px 18px 18px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
   }
   .xruns-today-card,
   .xruns-player-spot-card,
@@ -5730,6 +5766,10 @@ preview_css <- HTML("
     background: #f8fafc;
     padding: 12px;
     min-width: 0;
+  }
+  .xruns-today-card {
+    flex: 0 0 clamp(320px, 31vw, 460px);
+    scroll-snap-align: start;
   }
   .xruns-today-card-label,
   .xruns-player-spot-label,
@@ -5956,17 +5996,12 @@ preview_css <- HTML("
       padding: 6px 10px !important;
     }
     .xruns-today-grid {
-      display: flex;
-      overflow-x: auto;
       gap: 8px;
       padding: 10px 14px 12px;
-      scroll-snap-type: x proximity;
-      -webkit-overflow-scrolling: touch;
     }
     .xruns-today-card {
       flex: 0 0 clamp(300px, 42vw, 420px);
       padding: 10px;
-      scroll-snap-align: start;
     }
     .xruns-today-card-label {
       margin-bottom: 6px;
@@ -6115,6 +6150,59 @@ ui <- page_navbar(
           pointer-events: none;
           z-index: -1;
         }
+      ")),
+      tags$script(HTML("
+        (function() {
+          function xrunsParseSortNumber(data) {
+            if (data === null || data === undefined) return { missing: true, value: 0 };
+            var text = String(data)
+              .replace(/<[^>]*>/g, '')
+              .replace(/[,+]/g, '')
+              .trim();
+            if (!text || text === '-' || text === '—' || /^na$/i.test(text)) {
+              return { missing: true, value: 0 };
+            }
+            var num = Number(text);
+            if (!isFinite(num)) return { missing: true, value: 0 };
+            return { missing: false, value: num };
+          }
+
+          function xrunsRegisterNaLastSort() {
+            if (!window.jQuery || !jQuery.fn || !jQuery.fn.dataTableExt) return;
+            var sorters = jQuery.fn.dataTableExt.oSort;
+            if (sorters['xruns-num-na-last-asc']) return;
+            jQuery.extend(sorters, {
+              'xruns-num-na-last-asc': function(a, b) {
+                a = xrunsParseSortNumber(a);
+                b = xrunsParseSortNumber(b);
+                if (a.missing && b.missing) return 0;
+                if (a.missing) return 1;
+                if (b.missing) return -1;
+                return a.value - b.value;
+              },
+              'xruns-num-na-last-desc': function(a, b) {
+                a = xrunsParseSortNumber(a);
+                b = xrunsParseSortNumber(b);
+                if (a.missing && b.missing) return 0;
+                if (a.missing) return 1;
+                if (b.missing) return -1;
+                return b.value - a.value;
+              }
+            });
+          }
+
+          xrunsRegisterNaLastSort();
+          var xrunsSortPoll = window.setInterval(function() {
+            xrunsRegisterNaLastSort();
+            if (window.jQuery && jQuery.fn && jQuery.fn.dataTableExt &&
+                jQuery.fn.dataTableExt.oSort &&
+                jQuery.fn.dataTableExt.oSort['xruns-num-na-last-asc']) {
+              window.clearInterval(xrunsSortPoll);
+            }
+          }, 50);
+          document.addEventListener('DOMContentLoaded', xrunsRegisterNaLastSort);
+          document.addEventListener('shiny:connected', xrunsRegisterNaLastSort);
+        })();
       ")),
       # JS: handle year-change reset of time period chips back to Season
       tags$script(HTML("
@@ -7574,7 +7662,7 @@ server <- function(input, output, session) {
           tags$div(class = "xruns-preview-title", "Today in xRuns"),
           tags$div(
             class = "xruns-preview-sub",
-            "Daily arguments from the model: movers, recent form, and record-vs-signal gaps when standings data is available."
+            "Daily arguments from the model: last-week form and the largest rating moves."
           )
         ),
         tags$div(
@@ -7595,10 +7683,10 @@ server <- function(input, output, session) {
     rows <- daily_board()
     if (is.null(rows) || nrow(rows) == 0) return(NULL)
     tags$div(
-      `data-filename` = paste0("xruns-daily-", current_year(), ".png"),
+      `data-filename` = paste0("xruns-daily-", DEFAULT_YEAR, ".png"),
       xruns_daily_share_card(
         daily_rows = rows,
-        season = current_year(),
+        season = DEFAULT_YEAR,
         base_url = xruns_current_base_url(session),
         data_label = current_overall_data_label(),
         route = xruns_route_hash("team-rankings")
@@ -7779,8 +7867,8 @@ server <- function(input, output, session) {
         autoWidth  = FALSE,
         rowCallback = row_click_js,
         columnDefs = list(
-          list(targets = 3,             render = signed_render),
-          list(targets = 6,             render = signed_one_render),
+          list(targets = 3,             render = signed_render, type = "xruns-num-na-last"),
+          list(targets = 6,             render = signed_one_render, type = "xruns-num-na-last"),
           list(className = "dt-center", targets = centered_cols),
           list(orderable = FALSE,       targets = 1),
           list(width = "44px",          targets = 1),
@@ -7795,6 +7883,7 @@ server <- function(input, output, session) {
           list(targets = 8, orderData = 11),
           list(targets = 9, orderData = 12),
           list(targets = 6, orderData = 13),
+          list(targets = c(10, 11, 12, 13), type = "xruns-num-na-last"),
           # Hide the sort helper and abbrev columns
           list(targets = c(10, 11, 12, 13, 14), visible = FALSE)
         )
@@ -8104,8 +8193,9 @@ server <- function(input, output, session) {
           list(orderable = FALSE, targets = 1),
           list(width = "36px",    targets = 1),
           list(className = "dt-center", targets = centered_cols),
-          list(targets = signed_cols, render = signed_render),
-          list(targets = signed_one_cols, render = signed_one_render),
+          list(targets = signed_cols, render = signed_render, type = "xruns-num-na-last"),
+          list(targets = signed_one_cols, render = signed_one_render, type = "xruns-num-na-last"),
+          list(targets = 8, type = "xruns-num-na-last"),
           # Run value columns sort descending first (higher = better)
           list(targets = c(3, 4, 5, 9, 10, 11, 12), orderSequence = list("desc", "asc")),
           # Rank sorts ascending first (lower = better)
@@ -9349,16 +9439,16 @@ server <- function(input, output, session) {
                     player_id)
 
     # Keep raw numeric copies for sorting BEFORE converting to HTML strings.
-    # NA → -Inf so dashes sort below all real values.
+    # Missing values stay NA so the shared DT sort plug-in keeps dashes last.
     pv_display <- pv_display %>%
       dplyr::mutate(
-        ovr_sort = dplyr::coalesce(Overall,     -Inf),
-        waa_sort = dplyr::coalesce(WAA,         -Inf),
-        xruns_sort = dplyr::coalesce(xRuns,     -Inf),
-        hit_sort = dplyr::coalesce(Hitting,     -Inf),
-        br_sort  = dplyr::coalesce(Baserunning, -Inf),
-        pit_sort = dplyr::coalesce(Pitching,    -Inf),
-        fld_sort = dplyr::coalesce(Fielding,    -Inf),
+        ovr_sort = Overall,
+        waa_sort = WAA,
+        xruns_sort = xRuns,
+        hit_sort = Hitting,
+        br_sort  = Baserunning,
+        pit_sort = Pitching,
+        fld_sort = Fielding,
         player_id_ = player_id
       )
 
@@ -9432,6 +9522,7 @@ server <- function(input, output, session) {
           list(orderData = 14, targets = 7),
           list(orderData = 15, targets = 8),
           list(orderData = 16, targets = 9),
+          list(type = "xruns-num-na-last", targets = c(10, 11, 12, 13, 14, 15, 16)),
           # Hide the sort helper columns
           list(visible = FALSE, targets = c(10, 11, 12, 13, 14, 15, 16, 17))
         )
