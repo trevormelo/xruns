@@ -393,11 +393,18 @@ load_year <- function(base, y) {
     github_raw_url(f, sprintf("fielding_%d.csv", y))
   )
   fld_df <- if (!is.null(fld_df_raw)) {
+    fld_outs_col <- if ("outs_total" %in% names(fld_df_raw)) {
+      fld_df_raw$outs_total
+    } else if ("tot_plays" %in% names(fld_df_raw)) {
+      fld_df_raw$tot_plays
+    } else {
+      NA_real_
+    }
     fd <- fld_df_raw %>%
       transmute(
         player_id  = as.integer(id),
         fld_runs   = safe_numeric(total_runs),
-        fld_outs   = safe_numeric(outs_total)
+        fld_outs   = safe_numeric(fld_outs_col)
       ) %>%
       filter(!is.na(player_id)) %>%
       group_by(player_id) %>%
