@@ -8560,7 +8560,7 @@ server <- function(input, output, session) {
   mp_result <- eventReactive(mp_generation_token(), {
     req(input$mp_team_a, input$mp_team_b)
     
-    tt <- current_team_tbl()
+    tt <- team_tbl_for_period("season")
     ta <- tt %>% dplyr::filter(abbrev == input$mp_team_a)
     tb <- tt %>% dplyr::filter(abbrev == input$mp_team_b)
     
@@ -8594,12 +8594,15 @@ server <- function(input, output, session) {
     # fielding value is shared by all pitchers and is added to the composite defense
     # separately below).
     calc_bp_rpg <- function(team_row, sp_pa, sp_rpg) {
-      tot_pa <- team_row$total_pit_pa
-      if (is.na(tot_pa) || tot_pa <= sp_pa || sp_pa <= 0)
-        return(team_row$def_pitching)
-      team_rate <- team_row$def_pitching / PA_PER_GAME
+      tot_pa <- team_row$total_pit_pa[1]
+      team_pitching <- team_row$def_pitching[1]
+      bp_pa <- tot_pa - sp_pa
+      min_bp_pa <- PA_PER_GAME * 2
+      if (is.na(tot_pa) || is.na(sp_pa) || is.na(bp_pa) ||
+          tot_pa <= sp_pa || sp_pa <= 0 || bp_pa < min_bp_pa)
+        return(team_pitching)
+      team_rate <- team_pitching / PA_PER_GAME
       sp_rate   <- sp_rpg / PA_PER_GAME
-      bp_pa     <- tot_pa - sp_pa
       bp_rate   <- (team_rate * tot_pa - sp_pa * sp_rate) / bp_pa
       bp_rate * PA_PER_GAME
     }
