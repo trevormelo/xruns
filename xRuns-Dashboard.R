@@ -417,6 +417,83 @@ load_year <- function(base, y) {
   } else {
     tibble(player_id = integer(0), fld_runs = numeric(0), fld_outs = numeric(0))
   }
+
+  # ---- Player profile metric detail (current Savant-style profile) -----------
+  batting_profile_raw <- if (identical(as.integer(y), 2026L)) {
+    read_github_csv(github_raw_url(f, sprintf("batting_stats_%d.csv", y)))
+  } else {
+    NULL
+  }
+  batting_profile_df <- if (!is.null(batting_profile_raw)) {
+    batting_profile_raw %>%
+      transmute(
+        player_id              = as.integer(player_id),
+        bat_k_pct              = safe_numeric(k_percent),
+        bat_bb_pct             = safe_numeric(bb_percent),
+        bat_obp                = safe_numeric(on_base_percent),
+        bat_babip              = safe_numeric(babip),
+        bat_cs                 = safe_numeric(r_total_caught_stealing),
+        bat_sb                 = safe_numeric(r_total_stolen_base),
+        bat_xslg               = safe_numeric(xslg),
+        bat_xwobacon           = safe_numeric(xwobacon),
+        bat_squared_up_swing   = safe_numeric(squared_up_swing),
+        bat_ideal_angle_rate   = safe_numeric(ideal_angle_rate),
+        bat_adjusted_ev        = safe_numeric(avg_hyper_speed),
+        bat_oz_swing_pct       = safe_numeric(oz_swing_percent),
+        bat_whiff_pct          = safe_numeric(whiff_percent),
+        bat_sprint_speed       = safe_numeric(sprint_speed)
+      ) %>%
+      filter(!is.na(player_id)) %>%
+      mutate(
+        bat_sb_attempts = dplyr::coalesce(bat_sb, 0) + dplyr::coalesce(bat_cs, 0),
+        bat_sb_pct = ifelse(bat_sb_attempts > 0, 100 * bat_sb / bat_sb_attempts, NA_real_)
+      ) %>%
+      group_by(player_id) %>%
+      summarise(dplyr::across(where(is.numeric), ~ dplyr::first(.x[!is.na(.x)], default = NA_real_)), .groups = "drop")
+  } else {
+    tibble(
+      player_id = integer(0), bat_k_pct = numeric(0), bat_bb_pct = numeric(0),
+      bat_obp = numeric(0), bat_babip = numeric(0), bat_cs = numeric(0),
+      bat_sb = numeric(0), bat_xslg = numeric(0), bat_xwobacon = numeric(0),
+      bat_squared_up_swing = numeric(0), bat_ideal_angle_rate = numeric(0),
+      bat_adjusted_ev = numeric(0), bat_oz_swing_pct = numeric(0),
+      bat_whiff_pct = numeric(0), bat_sprint_speed = numeric(0),
+      bat_sb_attempts = numeric(0), bat_sb_pct = numeric(0)
+    )
+  }
+
+  pitching_profile_raw <- if (identical(as.integer(y), 2026L)) {
+    read_github_csv(github_raw_url(f, sprintf("pitching_stats_%d.csv", y)))
+  } else {
+    NULL
+  }
+  pitching_profile_df <- if (!is.null(pitching_profile_raw)) {
+    pitching_profile_raw %>%
+      transmute(
+        player_id              = as.integer(player_id),
+        pit_k_pct              = safe_numeric(k_percent),
+        pit_bb_pct             = safe_numeric(bb_percent),
+        pit_xwobacon           = safe_numeric(xwobacon),
+        pit_barrel_pct         = safe_numeric(barrel_batted_rate),
+        pit_adjusted_ev        = safe_numeric(avg_hyper_speed),
+        pit_oz_swing_pct       = safe_numeric(oz_swing_percent),
+        pit_edge_pct           = safe_numeric(edge_percent),
+        pit_whiff_pct          = safe_numeric(whiff_percent),
+        pit_first_strike_pct   = safe_numeric(f_strike_percent),
+        pit_fastball_avg_mph   = safe_numeric(fastball_avg_speed)
+      ) %>%
+      filter(!is.na(player_id)) %>%
+      group_by(player_id) %>%
+      summarise(dplyr::across(where(is.numeric), ~ dplyr::first(.x[!is.na(.x)], default = NA_real_)), .groups = "drop")
+  } else {
+    tibble(
+      player_id = integer(0), pit_k_pct = numeric(0), pit_bb_pct = numeric(0),
+      pit_xwobacon = numeric(0), pit_barrel_pct = numeric(0),
+      pit_adjusted_ev = numeric(0), pit_oz_swing_pct = numeric(0),
+      pit_edge_pct = numeric(0), pit_whiff_pct = numeric(0),
+      pit_first_strike_pct = numeric(0), pit_fastball_avg_mph = numeric(0)
+    )
+  }
   
   # Search for standings — try the player folder and the primary year folder.
   year_data_folder <- paste0(y, " Data")
@@ -464,6 +541,7 @@ load_year <- function(base, y) {
                by = "player_id") %>%
     left_join(TEAM_META, by = "team_id") %>%
     left_join(run_df, by = "player_id") %>%
+    left_join(batting_profile_df, by = "player_id") %>%
     mutate(pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1),
@@ -479,6 +557,7 @@ load_year <- function(base, y) {
                              runs_chase, runs_waste),
                by = "player_id") %>%
     left_join(TEAM_META, by = "team_id") %>%
+    left_join(pitching_profile_df, by = "player_id") %>%
     mutate(pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1))
@@ -533,7 +612,9 @@ load_year <- function(base, y) {
     )
   
   list(year = y, batters = batters, pitchers = pitchers, standings = st,
-       run_df = run_df, fld_df = fld_df)
+       run_df = run_df, fld_df = fld_df,
+       batting_profile_df = batting_profile_df,
+       pitching_profile_df = pitching_profile_df)
 }
 
 # ---- helper: canonicalise abbreviations found in team-level files ------------
@@ -1523,7 +1604,11 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       WAA_Hitting       = xruns_component_waa(adj_pred_runs_per_pa * PA_PER_GAME, pa / PA_PER_GAME, "offense"),
       WAA_Baserunning   = xruns_component_waa(br_per_pa * PA_PER_GAME * BASERUNNING_RELIABILITY, pa / PA_PER_GAME, "offense"),
       WAA_Pitching      = NA_real_,
-      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense")
+      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense"),
+      bat_k_pct, bat_bb_pct, bat_obp, bat_babip, bat_cs, bat_sb,
+      bat_xslg, bat_xwobacon, bat_squared_up_swing, bat_ideal_angle_rate,
+      bat_adjusted_ev, bat_oz_swing_pct, bat_whiff_pct, bat_sprint_speed,
+      bat_sb_attempts, bat_sb_pct
     )
 
   pit_rows <- pitchers %>%
@@ -1548,7 +1633,10 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
       WAA_Hitting       = NA_real_,
       WAA_Baserunning   = NA_real_,
       WAA_Pitching      = xruns_component_waa(adj_pred_runs_per_pa * PA_PER_GAME, pa / PA_PER_GAME, "defense"),
-      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense")
+      WAA_Fielding      = xruns_component_waa(fld_per_out * OUTS_PER_GAME * FIELDING_RELIABILITY, fld_outs / OUTS_PER_GAME, "defense"),
+      pit_k_pct, pit_bb_pct, pit_xwobacon, pit_barrel_pct, pit_adjusted_ev,
+      pit_oz_swing_pct, pit_edge_pct, pit_whiff_pct, pit_first_strike_pct,
+      pit_fastball_avg_mph
     )
   
   all_rows <- dplyr::bind_rows(bat_rows, pit_rows)
@@ -1576,7 +1664,12 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
                                   xRuns_Fielding_hit = xRuns_Fielding,
                                   WAA_Hitting, WAA_Baserunning,
                                   WAA_Pitching_hit = WAA_Pitching,
-                                  WAA_Fielding_hit = WAA_Fielding),
+                                  WAA_Fielding_hit = WAA_Fielding,
+                                  bat_k_pct, bat_bb_pct, bat_obp, bat_babip,
+                                  bat_cs, bat_sb, bat_xslg, bat_xwobacon,
+                                  bat_squared_up_swing, bat_ideal_angle_rate,
+                                  bat_adjusted_ev, bat_oz_swing_pct, bat_whiff_pct,
+                                  bat_sprint_speed, bat_sb_attempts, bat_sb_pct),
       dual_pit %>% dplyr::select(player_id,
                                   PA_pit = PA, xwOBA_pit = xwOBA,
                                   Pitching,
@@ -1591,7 +1684,11 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
                                   WAA_Hitting_pit = WAA_Hitting,
                                   WAA_Baserunning_pit = WAA_Baserunning,
                                   WAA_Pitching,
-                                  WAA_Fielding_pit = WAA_Fielding),
+                                  WAA_Fielding_pit = WAA_Fielding,
+                                  pit_k_pct, pit_bb_pct, pit_xwobacon,
+                                  pit_barrel_pct, pit_adjusted_ev, pit_oz_swing_pct,
+                                  pit_edge_pct, pit_whiff_pct, pit_first_strike_pct,
+                                  pit_fastball_avg_mph),
       by = "player_id"
     ) %>%
       dplyr::mutate(
@@ -1621,7 +1718,14 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
                     Hitting, Baserunning, Pitching, Fielding,
                     hit_pa, pit_pa, fld_outs,
                     xRuns_Hitting, xRuns_Baserunning, xRuns_Pitching, xRuns_Fielding,
-                    WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding)
+                    WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding,
+                    bat_k_pct, bat_bb_pct, bat_obp, bat_babip, bat_cs, bat_sb,
+                    bat_xslg, bat_xwobacon, bat_squared_up_swing, bat_ideal_angle_rate,
+                    bat_adjusted_ev, bat_oz_swing_pct, bat_whiff_pct, bat_sprint_speed,
+                    bat_sb_attempts, bat_sb_pct,
+                    pit_k_pct, pit_bb_pct, pit_xwobacon, pit_barrel_pct,
+                    pit_adjusted_ev, pit_oz_swing_pct, pit_edge_pct, pit_whiff_pct,
+                    pit_first_strike_pct, pit_fastball_avg_mph)
 
     # Bind: single-role rows stay intact; combined row is appended
     all_rows <- dplyr::bind_rows(all_rows, combined)
@@ -1660,7 +1764,14 @@ build_player_view <- function(enriched, use_single_season = FALSE) {
                   xRuns, WAA,
                   xRuns_Hitting, xRuns_Baserunning, xRuns_Pitching, xRuns_Fielding,
                   WAA_Hitting, WAA_Baserunning, WAA_Pitching, WAA_Fielding,
-                  hit_pa, pit_pa, fld_outs)
+                  hit_pa, pit_pa, fld_outs,
+                  bat_k_pct, bat_bb_pct, bat_obp, bat_babip, bat_cs, bat_sb,
+                  bat_xslg, bat_xwobacon, bat_squared_up_swing, bat_ideal_angle_rate,
+                  bat_adjusted_ev, bat_oz_swing_pct, bat_whiff_pct, bat_sprint_speed,
+                  bat_sb_attempts, bat_sb_pct,
+                  pit_k_pct, pit_bb_pct, pit_xwobacon, pit_barrel_pct,
+                  pit_adjusted_ev, pit_oz_swing_pct, pit_edge_pct, pit_whiff_pct,
+                  pit_first_strike_pct, pit_fastball_avg_mph)
 }
 
 # ---- load and build all years -----------------------------------------------
@@ -1990,6 +2101,161 @@ for (yc in names(team_tbl_by_year)) {
     if (is.na(x) || length(pool) == 0) return(NA_real_)
     round(mean(pool <= x) * 100)
   }
+
+  pct_rank_oriented <- function(x, pool, higher_is_better = TRUE) {
+    pool <- pool[is.finite(pool)]
+    if (is.na(x) || !is.finite(x) || length(pool) == 0) return(NA_real_)
+    pct <- if (isTRUE(higher_is_better)) mean(pool <= x) * 100 else mean(pool >= x) * 100
+    round(pmax(0, pmin(100, pct)))
+  }
+
+  xruns_savant_color <- function(pct) {
+    if (is.na(pct)) return("#b9d6d5")
+    pct <- pmax(0, pmin(100, pct)) / 100
+    ramp <- grDevices::colorRamp(c("#b91c1c", "#b9d6d5", "#047857"))
+    grDevices::rgb(ramp(pct) / 255)
+  }
+
+  xruns_metric_value <- function(row, col) {
+    if (is.null(row) || !col %in% names(row)) return(NA_real_)
+    suppressWarnings(as.numeric(row[[col]][1]))
+  }
+
+  xruns_metric_pool <- function(col, role_group = c("hitter", "pitcher", "all")) {
+    role_group <- match.arg(role_group)
+    if (is.null(pp_current_pv) || !col %in% names(pp_current_pv)) return(numeric(0))
+    pool <- pp_current_pv
+    if (identical(role_group, "hitter")) {
+      pool <- pool %>% dplyr::filter(Role %in% c("Hitter", "Player"))
+    } else if (identical(role_group, "pitcher")) {
+      pool <- pool %>% dplyr::filter(Role %in% c("Pitcher", "Player"))
+    }
+    suppressWarnings(as.numeric(pool[[col]]))
+  }
+
+  xruns_profile_value_label <- function(x, fmt = "number") {
+    if (is.na(x) || !is.finite(x)) return("N/A")
+    switch(
+      fmt,
+      "rate" = sub("^0", "", sprintf("%.3f", x)),
+      "percent" = sprintf("%.1f%%", x),
+      "mph" = sprintf("%.1f", x),
+      "integer" = sprintf("%.0f", x),
+      sprintf("%.1f", x)
+    )
+  }
+
+  xruns_profile_category_specs <- list(
+    hitter = list(
+      list(
+        name = "Quality of Contact",
+        metrics = list(
+          list(label = "xwOBAcon", col = "bat_xwobacon", fmt = "rate", higher = TRUE),
+          list(label = "xSLG", col = "bat_xslg", fmt = "rate", higher = TRUE),
+          list(label = "Adjusted EV", col = "bat_adjusted_ev", fmt = "mph", higher = TRUE),
+          list(label = "BABIP", col = "bat_babip", fmt = "rate", higher = TRUE)
+        )
+      ),
+      list(
+        name = "Plate Discipline",
+        metrics = list(
+          list(label = "BB%", col = "bat_bb_pct", fmt = "percent", higher = TRUE),
+          list(label = "Out of Zone Swing %", col = "bat_oz_swing_pct", fmt = "percent", higher = FALSE)
+        )
+      ),
+      list(
+        name = "Bat-to-Ball",
+        metrics = list(
+          list(label = "K%", col = "bat_k_pct", fmt = "percent", higher = FALSE),
+          list(label = "Whiff %", col = "bat_whiff_pct", fmt = "percent", higher = FALSE),
+          list(label = "Squared-Up / Swing", col = "bat_squared_up_swing", fmt = "percent", higher = TRUE),
+          list(label = "Ideal Attack Angle %", col = "bat_ideal_angle_rate", fmt = "percent", higher = TRUE)
+        )
+      ),
+      list(
+        name = "Speed",
+        metrics = list(
+          list(label = "Stolen Bases", col = "bat_sb", fmt = "integer", higher = TRUE),
+          list(label = "SB%", col = "bat_sb_pct", fmt = "percent", higher = TRUE),
+          list(label = "Sprint Speed", col = "bat_sprint_speed", fmt = "mph", higher = TRUE)
+        )
+      )
+    ),
+    pitcher = list(
+      list(
+        name = "Whiffability",
+        metrics = list(
+          list(label = "Fastball Avg MPH", col = "pit_fastball_avg_mph", fmt = "mph", higher = TRUE),
+          list(label = "Whiff %", col = "pit_whiff_pct", fmt = "percent", higher = TRUE),
+          list(label = "K%", col = "pit_k_pct", fmt = "percent", higher = TRUE),
+          list(label = "Out of Zone Swing %", col = "pit_oz_swing_pct", fmt = "percent", higher = TRUE)
+        )
+      ),
+      list(
+        name = "Control",
+        metrics = list(
+          list(label = "BB%", col = "pit_bb_pct", fmt = "percent", higher = FALSE),
+          list(label = "First Strike %", col = "pit_first_strike_pct", fmt = "percent", higher = TRUE),
+          list(label = "Edge %", col = "pit_edge_pct", fmt = "percent", higher = TRUE)
+        )
+      ),
+      list(
+        name = "Contact Inducing",
+        metrics = list(
+          list(label = "xwOBAcon", col = "pit_xwobacon", fmt = "rate", higher = FALSE),
+          list(label = "Barrel %", col = "pit_barrel_pct", fmt = "percent", higher = FALSE),
+          list(label = "Adjusted EV", col = "pit_adjusted_ev", fmt = "mph", higher = FALSE)
+        )
+      )
+    )
+  )
+
+  xruns_player_profile_categories <- function(row) {
+    if (is.null(row) || nrow(row) == 0) return(list())
+    role <- xruns_safe_text(row$Role)
+    groups <- if (identical(role, "Pitcher")) "pitcher" else if (identical(role, "Player")) c("hitter", "pitcher") else "hitter"
+    out <- list()
+    for (group in groups) {
+      for (category in xruns_profile_category_specs[[group]]) {
+        metric_rows <- lapply(category$metrics, function(metric) {
+          value <- xruns_metric_value(row, metric$col)
+          pool <- xruns_metric_pool(metric$col, group)
+          pct <- pct_rank_oriented(value, pool, metric$higher)
+          if (is.na(pct)) return(NULL)
+          list(
+            label = metric$label,
+            value = value,
+            value_label = xruns_profile_value_label(value, metric$fmt),
+            pct = pct,
+            color = xruns_savant_color(pct)
+          )
+        })
+        metric_rows <- Filter(Negate(is.null), metric_rows)
+        if (length(metric_rows) == 0) next
+        grade <- round(mean(vapply(metric_rows, `[[`, numeric(1), "pct"), na.rm = TRUE))
+        label <- if (length(groups) > 1) paste(if (group == "hitter") "Batting" else "Pitching", category$name) else category$name
+        out[[length(out) + 1]] <- list(
+          label = label,
+          pct = grade,
+          color = xruns_savant_color(grade),
+          metrics = metric_rows
+        )
+      }
+    }
+    out
+  }
+
+  xruns_player_xwaa_pct <- function(row) {
+    if (is.null(row) || nrow(row) == 0) return(NA_real_)
+    if (is.null(pp_current_pv) || !"WAA" %in% names(pp_current_pv)) return(NA_real_)
+    role <- xruns_safe_text(row$Role)
+    pool <- if (role %in% c("Hitter", "Player")) {
+      pp_current_pv %>% dplyr::filter(Role %in% c("Hitter", "Player")) %>% dplyr::pull(WAA)
+    } else {
+      pp_current_pv %>% dplyr::filter(Role %in% c("Pitcher", "Player")) %>% dplyr::pull(WAA)
+    }
+    pct_rank(row$WAA[1], pool)
+  }
 }
 
 # =============================================================================
@@ -2249,6 +2515,19 @@ custom_css <- HTML("
     color: rgba(255,255,255,0.45);
     margin-top: 3px;
   }
+  .xruns-pp-value-strip {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin: 8px 0 10px;
+    color: rgba(255,255,255,0.72);
+    font-size: 12px;
+    font-weight: 850;
+    flex-wrap: wrap;
+  }
+  .xruns-pp-value-strip .pos { color: #68d391; }
+  .xruns-pp-value-strip .neg { color: #fc8181; }
+  .xruns-pp-value-strip .neu { color: rgba(255,255,255,0.72); }
   .xruns-pp-overall .xruns-share-btn {
     margin-top: 13px;
   }
@@ -2379,7 +2658,7 @@ custom_css <- HTML("
   /* Section grid */
   .xruns-pp-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(280px, 0.86fr) minmax(420px, 1.14fr);
     gap: 14px;
     margin-top: 14px;
   }
@@ -2434,6 +2713,99 @@ custom_css <- HTML("
     color: #047857;
   }
   .xruns-pp-pct-num.neg-pct { color: #b91c1c; }
+  .xruns-pp-savant-card {
+    padding-bottom: 12px;
+  }
+  .xruns-pp-savant-group {
+    border-top: 1px solid #e8edf4;
+    padding: 13px 0 12px;
+  }
+  .xruns-pp-savant-group:first-of-type {
+    border-top: none;
+    padding-top: 0;
+  }
+  .xruns-pp-savant-row {
+    display: grid;
+    grid-template-columns: minmax(132px, 0.44fr) minmax(190px, 1fr) 58px;
+    gap: 12px;
+    align-items: center;
+  }
+  .xruns-pp-savant-grade-row {
+    margin-bottom: 9px;
+  }
+  .xruns-pp-savant-grade-row .xruns-pp-savant-name {
+    color: #1e293b;
+    font-weight: 900;
+  }
+  .xruns-pp-savant-grade-row .xruns-pp-savant-track {
+    height: 13px;
+  }
+  .xruns-pp-savant-grade-row .xruns-pp-savant-badge {
+    min-width: 34px;
+    height: 28px;
+    font-size: 13px;
+  }
+  .xruns-pp-savant-metrics {
+    display: grid;
+    gap: 7px;
+  }
+  .xruns-pp-savant-metric-row {
+    padding-left: 8px;
+  }
+  .xruns-pp-savant-name {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 750;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .xruns-pp-savant-track {
+    position: relative;
+    height: 9px;
+    border-radius: 999px;
+    background: #e8edf4;
+    overflow: visible;
+  }
+  .xruns-pp-savant-fill {
+    height: 100%;
+    min-width: 3px;
+    border-radius: 999px;
+  }
+  .xruns-pp-savant-badge {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 30px;
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 999px;
+    border: 3px solid #ffffff;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.10);
+  }
+  .xruns-pp-savant-value {
+    color: #475569;
+    font-size: 12px;
+    font-weight: 850;
+    text-align: right;
+    white-space: nowrap;
+  }
+  @media (max-width: 720px) {
+    .xruns-pp-savant-row {
+      grid-template-columns: minmax(100px, 0.8fr) minmax(130px, 1fr) 50px;
+      gap: 8px;
+    }
+    .xruns-pp-savant-name,
+    .xruns-pp-savant-value {
+      font-size: 11px;
+    }
+  }
   /* Composition — diverging bar rows */
   .xruns-pp-comp-row {
     display: flex;
@@ -4356,6 +4728,31 @@ xruns_share_card_css <- function() {
     line-height: 1.38;
     margin-top: 14px;
   }
+  .xruns-player-share-left-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 28px;
+  }
+  .xruns-player-share-mini {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .xruns-player-share-mini-label {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 850;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .xruns-player-share-mini-value {
+    font-size: 31px;
+    font-weight: 900;
+    line-height: 1;
+    margin-top: 8px;
+  }
   .xruns-share-pills {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4921,8 +5318,9 @@ xruns_ordinal <- function(x) {
 xruns_player_component_rows <- function(components) {
   rows <- Filter(function(x) !is.null(x$pct) && !is.na(x$pct), components)
   lapply(rows, function(x) {
-    color <- if (x$pct < 40) "#b91c1c" else "#047857"
-    value_color <- xruns_rating_color(x$value)
+    color <- xruns_savant_color(x$pct)
+    value_color <- x$value_color %||% xruns_rating_color(x$value)
+    value_label <- x$value_label %||% xruns_fmt_signed(x$value)
     tags$div(
       class = "xruns-share-bar-row xruns-player-component-row",
       tags$div(class = "xruns-share-bar-name", x$label),
@@ -4941,7 +5339,7 @@ xruns_player_component_rows <- function(components) {
       tags$div(
         class = "xruns-player-component-value",
         style = sprintf("color: %s;", value_color),
-        xruns_fmt_signed(x$value)
+        value_label
       )
     )
   })
@@ -5007,12 +5405,18 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL, ro
     pct_rank(overall, pp_pitcher_overalls)
   }
   component_rows <- list(
-    list(label = "Overall", value = overall, pct = pct_value),
-    list(label = "Hitting", value = row$Hitting[1], pct = pct_rank(row$Hitting[1], pp_hitter_hitting)),
-    list(label = "Baserunning", value = row$Baserunning[1], pct = pct_rank(row$Baserunning[1], pp_hitter_br)),
-    list(label = "Pitching", value = row$Pitching[1], pct = pct_rank(row$Pitching[1], pp_pitcher_pitching)),
-    list(label = "Fielding", value = row$Fielding[1], pct = pct_rank(row$Fielding[1], pp_fielding_all))
+    list(label = "Overall", value = overall, pct = pct_value)
   )
+  category_rows <- lapply(xruns_player_profile_categories(row), function(category) {
+    list(
+      label = category$label,
+      value = category$pct,
+      pct = category$pct,
+      value_label = xruns_ordinal(category$pct),
+      value_color = category$color
+    )
+  })
+  component_rows <- c(component_rows, category_rows)
   team_abbrev <- xruns_safe_text(row$Team)
 
   tags$div(
@@ -5037,17 +5441,38 @@ xruns_player_share_card <- function(row, season, base_url, data_label = NULL, ro
       class = "xruns-share-body",
       tags$div(
         class = "xruns-share-stat",
-        tags$div(class = "xruns-share-label", "Overall Rating"),
+        tags$div(class = "xruns-share-label", "xRuns/9 Rating"),
         tags$div(
           class = "xruns-share-big",
           style = sprintf("color: %s;", xruns_rating_color(overall)),
           xruns_fmt_signed(overall)
         ),
-        tags$div(class = "xruns-share-sub", "Average Run Value Added per 9 Innings")
+        tags$div(class = "xruns-share-sub", "Average Run Value Added per 9 Innings"),
+        tags$div(
+          class = "xruns-player-share-left-metrics",
+          tags$div(
+            class = "xruns-player-share-mini",
+            tags$div(class = "xruns-player-share-mini-label", "xWAA"),
+            tags$div(
+              class = "xruns-player-share-mini-value",
+              style = sprintf("color:%s;", xruns_rating_color(row$WAA[1])),
+              sprintf("%+.1f", row$WAA[1])
+            )
+          ),
+          tags$div(
+            class = "xruns-player-share-mini",
+            tags$div(class = "xruns-player-share-mini-label", "xRuns"),
+            tags$div(
+              class = "xruns-player-share-mini-value",
+              style = sprintf("color:%s;", xruns_rating_color(row$xRuns[1])),
+              sprintf("%+.1f", row$xRuns[1])
+            )
+          )
+        )
       ),
       tags$div(
         class = "xruns-share-stat",
-        tags$div(class = "xruns-share-label", "Component Percentiles"),
+        tags$div(class = "xruns-share-label", "Profile Percentiles"),
         tags$div(
           class = "xruns-share-bars xruns-player-component-bars",
           tagList(xruns_player_component_rows(component_rows))
@@ -6694,9 +7119,9 @@ ui <- page_navbar(
             "most qualified players fall between -1.0 and +1.0. ",
             tags$b("Overall"), " = Hitting + Baserunning + Pitching + Fielding, the total ",
             "runs per 9 innings that player adds above an average player across all facets of the game. ",
-            tags$b("WAA"), " is Wins Above Average from the xRuns model, estimated by converting accumulated ",
+            tags$b("xWAA"), " is expected Wins Above Average from the xRuns model, estimated by converting accumulated ",
             "run value through the dashboard's run-probability matrix. ",
-            tags$b("xRuns"), " is the accumulated run value behind that WAA estimate. ",
+            tags$b("xRuns"), " is the accumulated run value behind that xWAA estimate. ",
             "Dashes (—) appear where a stat is not applicable — hitters have no Pitching rating; ",
             "pitchers have no Hitting or Baserunning rating."
           )
@@ -6800,27 +7225,27 @@ ui <- page_navbar(
                               "."
                             )
                           ),
-                          tags$p(tags$b("Accumulated xRuns and WAA:"),
+                          tags$p(tags$b("Accumulated xRuns and xWAA:"),
                                  " player ratings remain rate stats, but the player tables also show accumulated",
                                  " value. xRuns converts each component back to total runs above average using",
                                  " the player's opportunities: hitter and pitcher components use PA, baserunning",
                                  " uses PA with the baserunning reliability scalar, and fielding uses defensive",
                                  " outs with the fielding reliability scalar."),
-                          tags$p(tags$b("WAA"),
-                                 " means Wins Above Average, not wins above replacement. It is estimated by",
+                          tags$p(tags$b("xWAA"),
+                                 " means expected Wins Above Average, not wins above replacement. It is estimated by",
                                  " converting each player's component run rate into win probability through the",
                                  " same Negative Binomial run-scoring model used by the matchup simulator.",
                                  " Offensive components compare win probability at league-average runs allowed",
                                  " with and without the player's run creation. Defensive components compare win",
                                  " probability at league-average runs scored with and without the player's run",
-                                 " prevention. Component WAA values are then summed."),
+                                 " prevention. Component xWAA values are then summed."),
                           tags$p("The win-probability matrix evaluates scores from 0 through ",
                                  WIN_PROB_RUN_MAX,
                                  " runs with dispersion r = ", DISP_SIZE,
                                  ". The baseline is the matrix's own average-vs-average win probability at ",
                                  MLB_AVG_RUNS_PER_GAME,
                                  " runs per team, rather than a fixed .500 or a fixed runs-per-win shortcut.",
-                                 " This keeps WAA tied to the run environment and avoids truncating high-scoring",
+                                 " This keeps xWAA tied to the run environment and avoids truncating high-scoring",
                                  " offensive outcomes."),
                           tags$p(tags$b("Important:"), " the model is NOT trained on W-L records or team run totals. ",
                                  "The accuracy check below validates it against actual run differential per game.")
@@ -7196,10 +7621,10 @@ server <- function(input, output, session) {
     # Overall percentile pill text (role-appropriate)
     pct_text <- if (role %in% c("Hitter", "Player") && length(pp_hitter_overalls) > 0) {
       h_pct <- pct_rank(overall, pp_hitter_overalls)
-      if (!is.na(h_pct)) sprintf("%dth percentile among hitters", h_pct) else NULL
+      if (!is.na(h_pct)) paste(xruns_ordinal(h_pct), "percentile among hitters") else NULL
     } else if (role == "Pitcher" && length(pp_pitcher_overalls) > 0) {
       p_pct <- pct_rank(overall, pp_pitcher_overalls)
-      if (!is.na(p_pct)) sprintf("%dth percentile among pitchers", p_pct) else NULL
+      if (!is.na(p_pct)) paste(xruns_ordinal(p_pct), "percentile among pitchers") else NULL
     } else NULL
 
     # Team logo
@@ -7252,10 +7677,10 @@ server <- function(input, output, session) {
       tags$div(
         class = "xruns-pp-overall",
         tags$div(class = paste("xruns-pp-overall-val", overall_cls), overall_sign),
-        tags$div(class = "xruns-pp-overall-label", "Overall - runs/9 vs avg"),
+        tags$div(class = "xruns-pp-overall-label", "Overall - xRuns/9 vs avg"),
         tags$div(
-          style = "display:flex; gap:14px; justify-content:center; margin:8px 0 10px; color:#475569; font-size:12px; font-weight:800;",
-          tags$span(class = waa_cls, sprintf("WAA %+.1f", waa)),
+          class = "xruns-pp-value-strip",
+          tags$span(class = waa_cls, sprintf("xWAA %+.1f", waa)),
           tags$span(sprintf("xRuns %+.1f", xruns))
         ),
         actionButton(
@@ -7273,66 +7698,49 @@ server <- function(input, output, session) {
     row <- current_player_row()
     if (is.null(row) || nrow(row) == 0) return(NULL)
 
-    role        <- row$Role
-    overall     <- row$Overall
-    hitting     <- row$Hitting
-    baserunning <- row$Baserunning
-    pitching    <- row$Pitching
-    fielding    <- row$Fielding
-
-    is_hitter  <- role %in% c("Hitter", "Player")
+    role <- row$Role
+    is_hitter <- role %in% c("Hitter", "Player")
     is_pitcher <- role %in% c("Pitcher", "Player")
+    categories <- xruns_player_profile_categories(row)
 
-    make_pct_row <- function(label, val, pool) {
-      p <- pct_rank(val, pool)
+    make_pct_row <- function(label, p) {
       if (is.na(p)) return(NULL)
-      is_neg  <- p < 40
-      fill_pct <- p
+      color <- xruns_savant_color(p)
       tags$div(
         class = "xruns-pp-pct-row",
         tags$span(class = "xruns-pp-pct-label", label),
         tags$div(
           class = "xruns-pp-pct-track",
           tags$div(
-            class = if (is_neg) "xruns-pp-pct-fill neg-fill" else "xruns-pp-pct-fill",
-            style = sprintf("width: %d%%;", fill_pct)
+            class = "xruns-pp-pct-fill",
+            style = sprintf("width: %d%%; background:%s;", p, color)
           )
         ),
         tags$span(
-          class = if (is_neg) "xruns-pp-pct-num neg-pct" else "xruns-pp-pct-num",
-          sprintf("%dth", p)
+          class = "xruns-pp-pct-num",
+          style = sprintf("color:%s;", color),
+          xruns_ordinal(p)
         )
       )
     }
 
     rows <- list()
-
     if (is_hitter && is_pitcher) {
-      # Two-way: show hitter pool for hitting-side, pitcher pool for pitching-side
-      rows[["h_overall"]] <- make_pct_row("Overall (hit)", overall, pp_hitter_overalls)
-      rows[["p_overall"]] <- make_pct_row("Overall (pit)", overall, pp_pitcher_overalls)
-      rows[["hitting"]]   <- make_pct_row("Hitting", hitting, pp_hitter_hitting)
-      rows[["pitching"]]  <- make_pct_row("Pitching", pitching, pp_pitcher_pitching)
-      rows[["br"]]        <- make_pct_row("Baserunning", baserunning, pp_hitter_br)
-      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+      rows[["overall_hit"]] <- make_pct_row("Overall (hit)", pct_rank(row$Overall[1], pp_hitter_overalls))
+      rows[["overall_pit"]] <- make_pct_row("Overall (pit)", pct_rank(row$Overall[1], pp_pitcher_overalls))
     } else if (is_hitter) {
-      rows[["overall"]]   <- make_pct_row("Overall", overall, pp_hitter_overalls)
-      rows[["hitting"]]   <- make_pct_row("Hitting", hitting, pp_hitter_hitting)
-      rows[["br"]]        <- make_pct_row("Baserunning", baserunning, pp_hitter_br)
-      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+      rows[["overall"]] <- make_pct_row("Overall", pct_rank(row$Overall[1], pp_hitter_overalls))
     } else {
-      rows[["overall"]]   <- make_pct_row("Overall", overall, pp_pitcher_overalls)
-      rows[["pitching"]]  <- make_pct_row("Pitching", pitching, pp_pitcher_pitching)
-      rows[["fielding"]]  <- make_pct_row("Fielding", fielding, pp_fielding_all)
+      rows[["overall"]] <- make_pct_row("Overall", pct_rank(row$Overall[1], pp_pitcher_overalls))
+    }
+    rows[["xwaa"]] <- make_pct_row("xWAA", xruns_player_xwaa_pct(row))
+    for (category in categories) {
+      rows[[category$label]] <- make_pct_row(category$label, category$pct)
     }
 
-    pool_note <- if (is_hitter && is_pitcher) {
-      "Percentiles vs. all hitters / pitchers in current season."
-    } else if (is_hitter) {
-      "Percentiles vs. all hitters in current season."
-    } else {
-      "Percentiles vs. all pitchers in current season."
-    }
+    pool_note <- if (is_hitter && is_pitcher) "Percentiles vs. all hitters / pitchers in current season."
+    else if (is_hitter) "Percentiles vs. all hitters in current season."
+    else "Percentiles vs. all pitchers in current season."
 
     tags$div(
       class = "xruns-pp-card",
@@ -7345,94 +7753,52 @@ server <- function(input, output, session) {
     )
   })
 
-  # ---- pp_composition (RIGHT card) — diverging bars ----
+  # ---- pp_composition (RIGHT card) — Savant-style category profile ----
   output$pp_composition <- renderUI({
     row <- current_player_row()
     if (is.null(row) || nrow(row) == 0) return(NULL)
 
-    components <- list(
-      list(label = "Hitting",     val = row$Hitting),
-      list(label = "Baserunning", val = row$Baserunning),
-      list(label = "Pitching",    val = row$Pitching),
-      list(label = "Fielding",    val = row$Fielding)
-    )
-    components <- Filter(function(x) !is.na(x$val), components)
-    if (length(components) == 0) return(NULL)
+    categories <- xruns_player_profile_categories(row)
+    if (length(categories) == 0) {
+      return(tags$div(
+        class = "xruns-pp-card",
+        tags$div(style = "font-size:12px; color:#94a3b8;", "No detailed metric profile is available for this player.")
+      ))
+    }
 
-    # Scale bars relative to the largest absolute value among components
-    max_abs <- max(sapply(components, function(x) abs(x$val)), na.rm = TRUE)
-    if (max_abs == 0) max_abs <- 1
-
-    comp_rows <- lapply(components, function(x) {
-      v      <- x$val
-      pct    <- min(abs(v) / max_abs * 100, 100)
-      is_pos <- v > 0.01
-      is_neg <- v < -0.01
-      val_cls_str <- if (is_pos) "pos" else if (is_neg) "neg" else "neu"
-      sign_s <- signed_str(v)
-
+    metric_row <- function(metric) {
       tags$div(
-        class = "xruns-pp-comp-row",
-        # Label
-        tags$span(class = "xruns-pp-comp-label", x$label),
-        # Negative half (bar grows rightward from centre for negative values)
+        class = "xruns-pp-savant-row xruns-pp-savant-metric-row",
+        tags$div(class = "xruns-pp-savant-name", metric$label),
         tags$div(
-          class = "xruns-pp-comp-neg-half",
-          if (is_neg)
-            tags$div(class = "xruns-pp-comp-bar neg",
-                     style = sprintf("width:%.1f%%;", pct))
-          else
-            tags$div(style = "width:0;")
+          class = "xruns-pp-savant-track",
+          tags$div(class = "xruns-pp-savant-fill", style = sprintf("width:%d%%; background:%s;", metric$pct, metric$color)),
+          tags$div(class = "xruns-pp-savant-badge", style = sprintf("left:%d%%; background:%s;", metric$pct, metric$color), metric$pct)
         ),
-        # Centre zero tick
-        tags$div(class = "xruns-pp-comp-zero"),
-        # Positive half
-        tags$div(
-          class = "xruns-pp-comp-pos-half",
-          if (is_pos)
-            tags$div(class = "xruns-pp-comp-bar pos",
-                     style = sprintf("width:%.1f%%;", pct))
-          else
-            tags$div(style = "width:0;")
-        ),
-        # Value label
-        tags$span(class = paste("xruns-pp-comp-val", val_cls_str), sign_s)
+        tags$div(class = "xruns-pp-savant-value", metric$value_label)
       )
-    })
-    
-    accum_components <- list(
-      list(label = "Hitting",     val = row$xRuns_Hitting),
-      list(label = "Baserunning", val = row$xRuns_Baserunning),
-      list(label = "Pitching",    val = row$xRuns_Pitching),
-      list(label = "Fielding",    val = row$xRuns_Fielding)
-    )
-    accum_components <- Filter(function(x) !is.na(x$val), accum_components)
-    accum_rows <- lapply(accum_components, function(x) {
-      val_cls <- if (x$val > 0.01) "pos" else if (x$val < -0.01) "neg" else "neu"
+    }
+
+    category_group <- function(category) {
       tags$div(
-        style = "display:flex; justify-content:space-between; gap:12px; font-size:12px; color:#475569; padding:3px 0;",
-        tags$span(x$label),
-        tags$span(class = val_cls, style = "font-weight:800;", sprintf("%+.1f", x$val))
+        class = "xruns-pp-savant-group",
+        tags$div(
+          class = "xruns-pp-savant-row xruns-pp-savant-grade-row",
+          tags$div(class = "xruns-pp-savant-name", category$label),
+          tags$div(
+            class = "xruns-pp-savant-track",
+            tags$div(class = "xruns-pp-savant-fill", style = sprintf("width:%d%%; background:%s;", category$pct, category$color)),
+            tags$div(class = "xruns-pp-savant-badge", style = sprintf("left:%d%%; background:%s;", category$pct, category$color), category$pct)
+          ),
+          tags$div(class = "xruns-pp-savant-value", xruns_ordinal(category$pct))
+        ),
+        tags$div(class = "xruns-pp-savant-metrics", tagList(lapply(category$metrics, metric_row)))
       )
-    })
+    }
 
     tags$div(
-      class = "xruns-pp-card",
-      tags$div(class = "xruns-pp-card-label", "Component breakdown"),
-      tagList(comp_rows),
-      tags$div(
-        style = "margin-top:12px; padding-top:10px; border-top:1px solid #e2e8f0;",
-        tags$div(
-          style = "display:flex; justify-content:space-between; color:#1e293b; font-size:12px; font-weight:900; margin-bottom:4px;",
-          tags$span("Accumulated xRuns"),
-          tags$span(sprintf("WAA %+.1f", row$WAA))
-        ),
-        tagList(accum_rows)
-      ),
-      tags$div(
-        style = "font-size:10.5px; color:#94a3b8; margin-top:8px;",
-        "Bars show rate value. Accumulated xRuns converts those ratings through player opportunities."
-      )
+      class = "xruns-pp-card xruns-pp-savant-card",
+      tagList(lapply(categories, category_group))
     )
   })
 
@@ -7464,7 +7830,7 @@ server <- function(input, output, session) {
     hover_txt <- paste0(
       "<b>", hist$year, "</b><br>",
       "Overall: ", sprintf("%+.2f", hist$Overall), " runs/9<br>",
-      "WAA: ", sprintf("%+.1f", hist$WAA), "<br>",
+      "xWAA: ", sprintf("%+.1f", hist$WAA), "<br>",
       "xRuns: ", sprintf("%+.1f", hist$xRuns), "<br>",
       hist$Team, " · ", hist$PA, " PA"
     )
@@ -8163,7 +8529,8 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::select(Rank, Logo, Player, Overall, WAA, xRuns, Team, Role, PA,
                     Hitting, Baserunning, Pitching, Fielding,
-                    player_id_)  # hidden — used for row-click
+                    player_id_) %>%  # hidden — used for row-click
+      dplyr::rename(xWAA = WAA)
 
     # Column indices (0-indexed): Rank=0, Logo=1, Player=2, Overall=3,
     #   WAA=4, xRuns=5, Team=6, Role=7, PA=8,
@@ -8215,7 +8582,7 @@ server <- function(input, output, session) {
       ),
       caption = tags$caption(
         style = "color:#94a3b8; font-size:11.5px; text-align:left; padding:6px 0;",
-        "Overall is a rate metric. WAA and xRuns are accumulated value from the xRuns model."
+        "Overall is a rate metric. xWAA and xRuns are accumulated value from the xRuns model."
       )
     ) %>%
       formatStyle(columns = seq_len(ncol(pv)), fontSize = "13.5px") %>%
@@ -8223,7 +8590,7 @@ server <- function(input, output, session) {
                   color      = styleInterval(c(-0.01, 0.01),
                                              c("#b91c1c", "#64748b", "#047857")),
                   fontWeight = "bold") %>%
-      formatStyle(c("WAA", "xRuns", "Hitting", "Baserunning", "Pitching", "Fielding"),
+      formatStyle(c("xWAA", "xRuns", "Hitting", "Baserunning", "Pitching", "Fielding"),
                   color = styleInterval(c(-0.01, 0.01),
                                         c("#b91c1c", "#64748b", "#047857")))
   }, server = FALSE)
@@ -9485,6 +9852,7 @@ server <- function(input, output, session) {
         Pitching    = fmt_signed(Pitching),
         Fielding    = fmt_signed(Fielding)
       ) %>%
+      dplyr::rename(xWAA = WAA) %>%
       dplyr::select(-player_id)
 
     # Column indices (0-indexed):
@@ -9539,7 +9907,7 @@ server <- function(input, output, session) {
       ),
       caption = tags$caption(
         style = "color:#94a3b8; font-size:11.5px; text-align:left; padding:6px 0;",
-        "Only qualified players are shown. Overall is rate value; WAA and xRuns are accumulated value."
+        "Only qualified players are shown. Overall is rate value; xWAA and xRuns are accumulated value."
       )
     ) %>%
       formatStyle(columns = seq_len(ncol(pv_display)),
