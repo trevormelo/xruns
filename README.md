@@ -2,7 +2,7 @@
 
 A Shiny app that ranks MLB teams by expected runs/game over an average opponent
 in a neutral 9-inning game, and ranks individual players by predicted run value
-derived from their expected stats.
+scored from xwOBA using coefficients trained on actual wOBA.
 
 ## Quick start
 
@@ -141,7 +141,7 @@ When viewing the current season (any year with a `Snapshots/` folder), a
 
 **How the delta math works:** since each snapshot is cumulative season-to-date,
 the app subtracts an older snapshot from the newest to isolate a time window.
-For rate stats (est_wOBA, BIP rate) it back-calculates the weighted totals
+For rate stats (xwOBA, BIP rate) it back-calculates the weighted totals
 (`rate × PA`), subtracts them, then re-derives the rate from the PA delta. Run
 values (baserunning, fielding) are already in totals so they subtract directly.
 
@@ -150,11 +150,12 @@ values (baserunning, fielding) are already in totals so they subtract directly.
 ## How the Ratings Work
 
 **One pooled model, many seasons.** A weighted linear regression is fit over
-every player-season from every completed year. PA is the regression weight, so
-high-sample players drive the fit.
+every player-season from every completed year using actual wOBA. PA is the
+regression weight, so high-sample players drive the fit. Dashboard ratings are
+then scored by feeding xwOBA through those fitted wOBA coefficients.
 
-- Batters:  `runs/PA ~ est_wOBA + BIP_rate`
-- Pitchers: `runs/PA ~ est_wOBA + xERA`
+- Batters:  `runs/PA ~ wOBA + BIP_rate`
+- Pitchers: `runs/PA ~ wOBA + xERA`
 
 Predictions are centered by that season's cohort mean so `0 = league-average`.
 Multiplying by 38 PA/game converts the per-PA rate into a per-game rating.
@@ -163,7 +164,7 @@ Multiplying by 38 PA/game converts the per-PA rate into a per-game rating.
 - **Defensive Rating** = expected runs prevented above average per game (pitching + fielding).
 - **Overall** = Off + Def = expected margin vs. a league-average team.
 
-The model is trained purely on player-level expected stats. Team W-L and team
+The model is trained purely on player-level wOBA and run value. Team W-L and team
 run totals are **never** used as training data. The Methodology tab validates
 the ratings against actual run differential.
 

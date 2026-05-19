@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # Ranks teams by Offensive, Defensive, and Overall ratings expressed in
 # "expected runs per 9 innings vs. an average team."
-# Ranks individual players by predicted run value derived from expected stats.
+# Ranks individual players by predicted run value generated from expected stats.
 #
 # DATA LAYOUT:
 #   2022 Data/ expected_stats_batter_2022.csv, expected_stats_pitcher_2022.csv,
@@ -17,15 +17,17 @@
 # MODEL:
 #   - Pooled weighted linear regression fit on ALL available player-seasons
 #     from 2022-2026 (weights = run-value PA, so high-sample players drive fit).
-#   - Batters:  runs/PA ~ est_woba + bip_rate
-#   - Pitchers: runs/PA ~ est_woba + xera
-#   - Model predictions are applied back to every player-season, then PA-weighted
+#   - Batters:  runs/PA ~ woba + bip_rate
+#   - Pitchers: runs/PA ~ woba + xera
+#   - Ratings are scored with xwOBA by feeding est_woba through those fitted
+#     wOBA coefficients. Predictions are applied back to every player-season, then PA-weighted
 #     aggregated to teams for each year. Overall team rating = expected runs
 #     above an average MLB team in a neutral 9-inning game.
 #
-# IMPORTANT: The model is trained only on player-level expected stats -> actual
-# run value. It is NOT trained against team W-L records. Team records are used
-# solely as an out-of-model validation (Standings Check tab).
+# IMPORTANT: The model is trained only on player-level actual wOBA -> actual
+# run value, then ratings are assigned from xwOBA. It is NOT trained against team
+# W-L records. Team records are used solely as an out-of-model validation
+# (Standings Check tab).
 # =============================================================================
 
 # =============================================================================
@@ -542,7 +544,9 @@ load_year <- function(base, y) {
     left_join(TEAM_META, by = "team_id") %>%
     left_join(run_df, by = "player_id") %>%
     left_join(batting_profile_df, by = "player_id") %>%
-    mutate(pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
+    mutate(woba        = safe_numeric(woba),
+           est_woba    = safe_numeric(est_woba),
+           pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1),
            br_runs     = dplyr::coalesce(br_runs, 0),
@@ -558,7 +562,9 @@ load_year <- function(base, y) {
                by = "player_id") %>%
     left_join(TEAM_META, by = "team_id") %>%
     left_join(pitching_profile_df, by = "player_id") %>%
-    mutate(pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
+    mutate(woba        = safe_numeric(woba),
+           est_woba    = safe_numeric(est_woba),
+           pa          = pmax(pa_exp, pa_rv, na.rm = TRUE),
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1))
   
@@ -1137,8 +1143,8 @@ attach_period_records <- function(tt, cache, snapshots, window_days) {
 }
 
 # ---- modelling ---------------------------------------------------------------
-BAT_FORMULA <- runs_per_pa ~ est_woba + bip_rate
-PIT_FORMULA <- runs_per_pa ~ est_woba + xera
+BAT_FORMULA <- runs_per_pa ~ woba + bip_rate
+PIT_FORMULA <- runs_per_pa ~ woba + xera
 
 # Recency multiplier: each season decays by this factor per year away from the
 # most recent season. 0.5 = each prior year gets half the weight of the next.
@@ -1179,12 +1185,16 @@ RECENCY_BLEND_K         <- 600   # PAs for half-max alpha
 fit_pooled_models <- function(years_list) {
   bat_pool <- bind_rows(lapply(years_list, `[[`, "batters"))
   pit_pool <- bind_rows(lapply(years_list, `[[`, "pitchers"))
-  bat_pool <- bat_pool %>% filter(
-    is.finite(runs_per_pa), is.finite(est_woba), is.finite(bip_rate), pa_rv >= 1
-  )
-  pit_pool <- pit_pool %>% filter(
-    is.finite(runs_per_pa), is.finite(est_woba), is.finite(xera), pa_rv >= 1
-  )
+  bat_pool <- bat_pool %>%
+    mutate(woba = safe_numeric(woba)) %>%
+    filter(
+      is.finite(runs_per_pa), is.finite(woba), is.finite(bip_rate), pa_rv >= 1
+    )
+  pit_pool <- pit_pool %>%
+    mutate(woba = safe_numeric(woba)) %>%
+    filter(
+      is.finite(runs_per_pa), is.finite(woba), is.finite(xera), pa_rv >= 1
+    )
   # Apply recency weighting: most-recent year gets full weight (multiplier = 1),
   # each prior year gets RECENCY_DECAY^(years_back) applied on top of PA weight.
   max_year_bat <- max(bat_pool$season_year)
@@ -1209,6 +1219,10 @@ enrich_year <- function(year_data, models) {
   batters  <- year_data$batters
   pitchers <- year_data$pitchers
   
+  # Fit coefficients come from actual wOBA, but ratings are assigned from xwOBA.
+  batters  <- batters  %>% mutate(actual_woba = woba, woba = est_woba)
+  pitchers <- pitchers %>% mutate(actual_woba = woba, woba = est_woba)
+
   batters$pred_runs_per_pa  <- predict(models$bat_model, batters)
   pitchers$pred_runs_per_pa <- predict(models$pit_model, pitchers)
   
@@ -1332,7 +1346,7 @@ build_team_ratings <- function(enriched) {
 }
 
 # ---- build team ratings when the year uses team-level data (not player rows) -
-# Applies the regression model coefficients directly to team-level expected stats,
+# Applies wOBA-trained regression coefficients directly to team-level xwOBA,
 # then layers on the actual team baserunning and fielding run values for that year.
 build_team_ratings_team_mode <- function(year_data, models) {
   tb   <- year_data$team_batting
@@ -1341,10 +1355,11 @@ build_team_ratings_team_mode <- function(year_data, models) {
   tfld <- year_data$team_fld
   
   # ---- Hitting: apply bat_model to team-level batting stats -------------------
-  # We need est_woba and bip_rate (same predictors as player model)
+  # The model was fit on actual wOBA, but team ratings are scored with xwOBA.
   bat_needed <- c("est_woba", "bip_rate")
   tb_clean <- tb %>%
-    dplyr::filter(dplyr::if_all(dplyr::all_of(bat_needed), is.finite))
+    dplyr::filter(dplyr::if_all(dplyr::all_of(bat_needed), is.finite)) %>%
+    dplyr::mutate(woba = est_woba)
   
   tb_clean$pred_runs_per_pa <- predict(models$bat_model, tb_clean)
   
@@ -1387,10 +1402,9 @@ build_team_ratings_team_mode <- function(year_data, models) {
     dplyr::select(abbrev, total_bat_pa, off_hitting, off_br, off_rating, br_runs)
   
   # ---- Pitching: apply pit_model to team-level pitching stats ----------------
-  # The pitcher model uses est_woba + xera.  Team pitching files don't have xERA,
-  # so we substitute the bat_model's xwOBA-only prediction pathway:
-  # We only have est_woba + bip_rate from the pitching file; derive a surrogate
-  # xERA from the historical average xERA-to-xwOBA relationship in the model pool.
+  # The pitcher model uses wOBA + xERA at fit time and xwOBA + neutral xERA when
+  # scoring team ratings. Team pitching files don't have xERA, so we derive a surrogate
+  # xERA from the historical average xERA-to-wOBA relationship in the model pool.
   # Simple approach: set xera = mean(xera) from training data (neutral) so the
   # prediction is driven entirely by xwOBA.  This is conservative and consistent.
   mean_xera <- mean(models$pit_model$model[["xera"]], na.rm = TRUE)
@@ -1398,7 +1412,10 @@ build_team_ratings_team_mode <- function(year_data, models) {
   pit_needed <- c("est_woba", "bip_rate")
   tp_clean <- tp %>%
     dplyr::filter(dplyr::if_all(dplyr::all_of(pit_needed), is.finite)) %>%
-    dplyr::mutate(xera = mean_xera)  # fill with mean so model can predict
+    dplyr::mutate(
+      woba = est_woba,
+      xera = mean_xera
+    )  # fill with mean so model can predict
   
   tp_clean$pred_runs_per_pa <- predict(models$pit_model, tp_clean)
   
@@ -1884,7 +1901,7 @@ players_view_by_year <- list()
 
 for (yc in as.character(AVAILABLE_YEARS)) {
   if (yc %in% names(team_raw_years)) {
-    # Team-mode: use team-level expected stats for ratings.
+    # Team-mode: use team-level xwOBA for ratings.
     team_tbl_by_year[[yc]] <- build_team_ratings_team_mode(team_raw_years[[yc]], models)
   } else if (yc %in% player_yr_names) {
     # Player-mode (prior completed seasons): aggregate from player rows.
@@ -6815,7 +6832,7 @@ ui <- page_navbar(
             tags$b("Defense"), " = pitching + fielding."
           ),
           tags$p(
-            "Built from Statcast expected stats (xwOBA, xERA) — ",
+            "Trained on actual wOBA-to-run value relationships, then scored with Statcast xwOBA — ",
             "best read as expected-performance signal, not a guarantee of future wins."
           )
         )
@@ -7176,18 +7193,18 @@ ui <- page_navbar(
         tags$h1("The method behind the board."),
         tags$p(
           class = "xruns-feature-copy",
-          "The ratings are trained from player-level expected statistics and then checked against actual team run differential. This page keeps the assumptions, formulas, and validation results close to the product instead of hiding them in a footnote."
+          "The model coefficients are trained from player-level wOBA and then ratings are scored with xwOBA before being checked against actual team run differential. This page keeps the assumptions, formulas, and validation results close to the product instead of hiding them in a footnote."
         )
       ),
       tags$div(class = "xruns-method-wrap",
                layout_columns(
                  col_widths = c(6, 6),
                  card(
-                   card_header("Batter model — runs/PA ~ xwOBA + BIP rate"),
+                   card_header("Batter model — trained on wOBA, scored with xwOBA"),
                    verbatimTextOutput("bat_model_summary")
                  ),
                  card(
-                   card_header("Pitcher model — runs/PA ~ xwOBA + xERA"),
+                   card_header("Pitcher model — trained on wOBA, scored with xwOBA"),
                    verbatimTextOutput("pit_model_summary")
                  )
                ),
@@ -7195,8 +7212,8 @@ ui <- page_navbar(
                  card_header("Approach"),
                  tags$div(style = "padding: 10px 16px; line-height:1.65; font-size:13.5px;",
                           tags$p("For each player we fit a weighted linear regression that maps ",
-                                 tags$b("expected stats"), " (xwOBA and balls-in-play rate for batters; ",
-                                 "xwOBA + xERA for pitchers) to their actual ", tags$b("run value per PA"),
+                                 tags$b("actual wOBA"), " (plus balls-in-play rate for batters; ",
+                                 "plus xERA for pitchers) to their actual ", tags$b("run value per PA"),
                                  " from Statcast run-value tables. PA is the regression weight."),
                           tags$p("The model is trained on ", tags$b("all player-seasons from completed years (2022–2025) pooled"),
                                  ", not one year at a time. This gives larger, more stable coefficients ",
@@ -7206,9 +7223,9 @@ ui <- page_navbar(
                                  ". Multiplying by 38 PA/game converts per-PA to per-game. ",
                                  "For completed seasons, teams aggregate their rostered players with a PA-weighted mean."),
                           tags$p(tags$b("Current-season ratings (", DEFAULT_YEAR, ")"),
-                                 " use team-level expected stats (xwOBA, BIP rate) fed through the",
-                                 " same regression coefficients trained on prior years. This captures the team's",
-                                 " production as a whole without relying on individual player run values."),
+                                 " use team-level xwOBA and BIP rate fed through the",
+                                 " same wOBA-trained regression coefficients from prior years. This captures the team's",
+                                 " expected production as a whole without relying on individual player run values."),
                           tags$p(tags$b("Baserunning and fielding"),
                                  " are layered on top of the regression as independent",
                                  " Statcast run-value components (runner_runs and fielding total_runs,",
@@ -7315,7 +7332,7 @@ ui <- page_navbar(
                tags$div(
                  style = "color:#475569; font-size:13.5px; line-height:1.65; margin-bottom:12px;",
                  tags$p(
-                   "The model is fit purely on player expected stats. This section checks how ",
+                   "The model is fit purely on player wOBA and run value, then scored with xwOBA. This section checks how ",
                    "closely the team-level overall rating tracks actual season run ",
                    "differential and wins. Residual = Overall Rating − Actual RDiff/G — ",
                    "a positive residual means the model was bullish vs. the team's real runs."
@@ -8815,7 +8832,7 @@ server <- function(input, output, session) {
   output$bat_model_summary <- renderPrint({
     s <- summary(models$bat_model)
     cat("Weighted OLS (pooled ", paste(range(models$bat_pool_years), collapse = "–"),
-        "): runs/PA ~ est_woba + bip_rate\n", sep = "")
+        "): runs/PA ~ woba + bip_rate; ratings scored with xwOBA\n", sep = "")
     cat("Observations:", models$bat_pool_n, "\n")
     cat("R-squared:", round(s$r.squared, 4),
         " | Adj R²:", round(s$adj.r.squared, 4), "\n\n")
@@ -8825,7 +8842,7 @@ server <- function(input, output, session) {
   output$pit_model_summary <- renderPrint({
     s <- summary(models$pit_model)
     cat("Weighted OLS (pooled ", paste(range(models$pit_pool_years), collapse = "–"),
-        "): runs/PA ~ est_woba + xera\n", sep = "")
+        "): runs/PA ~ woba + xera; ratings scored with xwOBA\n", sep = "")
     cat("Observations:", models$pit_pool_n, "\n")
     cat("R-squared:", round(s$r.squared, 4),
         " | Adj R²:", round(s$adj.r.squared, 4), "\n\n")
