@@ -744,35 +744,67 @@ load_one_snapshot <- function(bat_p, pit_p, br_p, fld_p, y, standings_folder = N
 # ---- Scan YYYY Data/Snapshots/ and load every valid dated set of files ------
 # Returns a named list keyed by "YYYY-MM-DD", sorted oldest → newest.
 # File listing is done via the GitHub API.
+#
+# IMPORTANT: To avoid exhausting R's 128 file-connection limit, only the
+# snapshots actually needed for the rolling-window UI are loaded:
+#   • The latest snapshot (always required)
+#   • The oldest snapshot (fallback baseline when history is short)
+#   • The best candidate at or before each window boundary (1, 7, 30 days ago)
+# All other intermediate snapshots are enumerated but not read.
 scan_and_load_snapshots <- function(base, y) {
   snap_folder <- paste0(y, " Data/Snapshots")
-  
+
   all_names <- github_list_files(snap_folder)
   if (length(all_names) == 0) return(list())
-  
+
   pattern   <- sprintf("^bat_t_%d-\\d{2}-\\d{2}\\.csv$", y)
   bat_files <- sort(grep(pattern, all_names, value = TRUE))
   if (length(bat_files) == 0) return(list())
-  
+
+  # Parse dates from filenames (sorted ascending because ISO dates sort correctly)
+  d_strs <- sub(sprintf("^bat_t_(%d-\\d{2}-\\d{2})\\.csv$", y), "\\1", bat_files)
+  dates  <- tryCatch(as.Date(d_strs), error = function(e) rep(NA_Date_, length(d_strs)))
+  valid  <- !is.na(dates)
+  d_strs <- d_strs[valid]
+  dates  <- dates[valid]
+  if (length(d_strs) == 0) return(list())
+
+  # Identify which dates are actually needed to serve every rolling window.
+  # Windows: full season (latest only), last 30d, last 7d, last 1d.
+  # For each window we need: latest + the newest snapshot on or before the cutoff.
+  # We always keep oldest as the universal fallback baseline.
+  WINDOW_DAYS <- c(1L, 7L, 30L)
+  latest_date <- dates[length(dates)]
+  cutoff_dates <- latest_date - WINDOW_DAYS   # Date arithmetic
+
+  needed_idx <- integer(0)
+  # Always keep first (oldest) and last (latest)
+  needed_idx <- c(needed_idx, 1L, length(dates))
+  # For each window, find the newest date <= cutoff
+  for (cd in cutoff_dates) {
+    candidates <- which(dates <= cd)
+    if (length(candidates) > 0) needed_idx <- c(needed_idx, max(candidates))
+  }
+  needed_idx <- sort(unique(needed_idx))
+
   year_data_folder <- paste0(y, " Data")
   result <- list()
-  for (bf in bat_files) {
-    d_str <- sub(sprintf("^bat_t_(%d-\\d{2}-\\d{2})\\.csv$", y), "\\1", bf)
-    d     <- tryCatch(as.Date(d_str), error = function(e) NA_Date_)
-    if (is.na(d)) next
-    
+  for (i in needed_idx) {
+    d_str <- d_strs[i]
+    d     <- dates[i]
+
     bat_p <- github_raw_url(snap_folder, sprintf("bat_t_%s.csv",  d_str))
     pit_p <- github_raw_url(snap_folder, sprintf("pit_t_%s.csv",  d_str))
     br_p  <- github_raw_url(snap_folder, sprintf("br_t_%s.csv",   d_str))
     fld_p <- github_raw_url(snap_folder, sprintf("fld_t_%s.csv",  d_str))
-    
+
     snap <- load_one_snapshot(bat_p, pit_p, br_p, fld_p, y,
                               standings_folder = year_data_folder)
     if (is.null(snap)) next
     snap$date   <- d
     result[[d_str]] <- snap
   }
-  result  # already sorted because bat_files was sorted alphabetically (ISO dates sort correctly)
+  result  # already sorted because needed_idx is ascending and d_strs were sorted
 }
 
 # ---- Backward-compat: load old fixed-named team files as a single snapshot --
