@@ -568,6 +568,26 @@ load_year <- function(base, y) {
            runs_per_pa = runs_all / pmax(pa_rv, 1),
            bip_rate    = bip / pmax(pa_exp, 1))
   
+  # Guard against accidentally loading a pitcher-fielding export as player fielding.
+  # Valid fielder exports overlap overwhelmingly with batter IDs; a pitcher-dominant
+  # overlap would assign fielding to pitchers and distort player xRuns/Overall.
+  if (nrow(fld_df) > 0) {
+    fld_ids <- unique(fld_df$player_id)
+    fld_batter_overlap <- sum(fld_ids %in% batters$player_id)
+    fld_pitcher_overlap <- sum(fld_ids %in% pitchers$player_id)
+    is_pitcher_dominant_export <-
+      fld_pitcher_overlap > (2 * max(fld_batter_overlap, 1)) &&
+      fld_batter_overlap < (0.25 * length(fld_ids))
+    
+    if (is_pitcher_dominant_export) {
+      warning(sprintf(
+        "Ignoring player fielding data for %d: fielding IDs overlap pitchers (%d) far more than batters (%d).",
+        y, fld_pitcher_overlap, fld_batter_overlap
+      ))
+      fld_df <- tibble(player_id = integer(0), fld_runs = numeric(0), fld_outs = numeric(0))
+    }
+  }
+  
   # Attach fielding to whichever role that player appears in.
   # Rule: if the player appears in BOTH batters and pitchers (two-way, e.g. Ohtani),
   # attribute their fielding totals to whichever role has more PA — so team-level
